@@ -26,6 +26,7 @@ import {
 } from "@/lib/civil";
 import { localityLine, placeLine, placesErrorCopy, requestPlaces, type Suggestion } from "@/lib/places";
 import { getTripRawServerSnapshot, parseStoredTrip, readTripRaw, subscribeTrip, writeStoredTrip, type CitySelection, type StoredTrip } from "@/lib/trip";
+import Mark from "./mark";
 
 function subscribeNothing() {
   return () => {};
@@ -687,7 +688,7 @@ export default function Home() {
   return (
     <main className="stage">
       <form className="sheet" onSubmit={onSubmit} onPointerDown={onFormPointerDown} autoComplete="off">
-        <p className="mark">Swanavi</p>
+        <Mark />
         <div className="title-row">
           <div>
             <h1 className="title">{showPlan && city ? city.title : "Where to?"}</h1>
