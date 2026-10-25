@@ -5,6 +5,7 @@
  *
  *   hotel 4311   tour 4312   cab 4313   food 4314
  *   Catalog SKU resources: stable ports 4321-4330 (stores/x402.mjs).
+ *   Demo ticket SKUs: stable ports 4341-4343 (tickets/x402.mjs).
  *
  * An agent GETs /resource with X-AP4M-CHANNEL-ID and receives a 402 with the price; it answers
  * with a signed cumulative voucher; this process submits redeemVoucher from the submitter wallet
@@ -32,7 +33,7 @@ import { realpathSync } from 'node:fs';
 import { join } from 'node:path';
 import { pathToFileURL } from 'node:url';
 import { ethers } from 'ethers';
-import { DEFAULTS, STORE_RESOURCES, resourceUrlFor } from './merchants.mjs';
+import { DEFAULTS, STORE_RESOURCES, TICKET_RESOURCES, resourceUrlFor } from './merchants.mjs';
 
 export function sellerPrices(env = process.env) {
   const prices = {};
@@ -49,7 +50,9 @@ export function sellerContent(entry) {
     sellerId: entry.sellerId,
     name: entry.name,
     ...(entry.sku ? { sku: entry.sku, title: entry.title, amount: entry.price, currency: 'RLUSD' } : {}),
-    confirmation: `Booking confirmed by ${entry.name}. Paid over x402 on an AP4M channel; see the VoucherRedeemed event in PAYMENT-RESPONSE.`,
+    ...(entry.demoTicket
+      ? { demo: true }
+      : { confirmation: `Booking confirmed by ${entry.name}. Paid over x402 on an AP4M channel; see the VoucherRedeemed event in PAYMENT-RESPONSE.` }),
   };
 }
 
@@ -100,7 +103,7 @@ export async function startResourceSellers({
   const prices = sellerPrices(env);
   const sellers = [];
   try {
-    for (const entry of [...DEFAULTS, ...STORE_RESOURCES]) {
+    for (const entry of [...DEFAULTS, ...STORE_RESOURCES, ...TICKET_RESOURCES]) {
       const price = entry.sku ? ethers.parseUnits(entry.price, 18) : prices[entry.sellerId];
       const resourceUrl = resourceUrlFor(`http://${host}`, entry);
       const merchant = createX402Merchant({

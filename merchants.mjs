@@ -13,8 +13,9 @@
 import { PaymentError, formatRlusd, parseRlusd } from './payments.mjs';
 import { STORES } from './stores/catalog.mjs';
 import { STORE_RESOURCES, storeResource } from './stores/x402.mjs';
+import { TICKET_RESOURCES, ticketResource } from './tickets/x402.mjs';
 
-export { STORE_RESOURCES };
+export { STORE_RESOURCES, TICKET_RESOURCES };
 
 export const DEFAULTS = [
   { sellerId: 'hotel', name: 'The Plaza Hotel', price: '4', x402Port: 4311 },
@@ -105,6 +106,13 @@ export function createMerchants({ sellers = [], x402BaseUrl = null } = {}) {
       if (!x402BaseUrl) throw new PaymentError('seller_unavailable', 'Catalog payments require X402_SELLERS.');
       let entry;
       try { entry = storeResource(sellerId, sku); }
+      catch (error) { throw new PaymentError('bad_request', error.message); }
+      return resourceUrlFor(x402BaseUrl, entry);
+    }
+    if (TICKET_RESOURCES.some((entry) => entry.sellerId === sellerId)) {
+      if (!x402BaseUrl) throw new PaymentError('seller_unavailable', 'Ticket payments require X402_SELLERS.');
+      let entry;
+      try { entry = ticketResource(sellerId, sku); }
       catch (error) { throw new PaymentError('bad_request', error.message); }
       return resourceUrlFor(x402BaseUrl, entry);
     }
