@@ -5,6 +5,7 @@ import { useRouter } from "next/navigation";
 import { useEffect, useMemo, useState, useSyncExternalStore } from "react";
 import { placeLine, placesErrorCopy, requestPlaces, type Attraction } from "@/lib/places";
 import { getTripRawServerSnapshot, parseStoredTrip, readTripRaw, subscribeTrip, writeStoredTrip } from "@/lib/trip";
+import Mark from "../mark";
 
 function subscribeNothing() {
   return () => {};
@@ -125,7 +126,7 @@ export default function HotelsPage() {
       <section className="sheet gallery">
         <header className="gallery-head">
           <div>
-            <p className="mark">Swanavi</p>
+            <Mark />
             <h1 className="title">{trip?.city.title ?? "Hotel"}</h1>
             <p className="region">{cityLine ? `Stay near what you picked in ${trip?.city.title}.` : "Where you sleep."}</p>
           </div>

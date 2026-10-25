@@ -7,6 +7,7 @@ import { inclusiveDays } from "@/lib/civil";
 import { placeLine, placesErrorCopy, requestPlaces, type Attraction } from "@/lib/places";
 import { getTripRawServerSnapshot, parseStoredTrip, readTripRaw, subscribeTrip, writeStoredTrip } from "@/lib/trip";
 import DemoTickets from "./demo-tickets";
+import Mark from "../mark";
 
 function subscribeNothing() {
   return () => {};
@@ -126,7 +127,7 @@ export default function AttractionsPage() {
       <section className="sheet gallery">
         <header className="gallery-head">
           <div>
-            <p className="mark">Swanavi</p>
+            <Mark />
             {trip ? (
               <>
                 <h1 className="title">{trip.city.title}</h1>

@@ -4,6 +4,7 @@ import "./globals.css";
 export const metadata: Metadata = {
   title: "Swanavi",
   description: "Plan the city, the days, and the hours between them.",
+  icons: { icon: "/swan-logo.jpg" },
 };
 
 export const viewport: Viewport = {

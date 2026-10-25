@@ -7,6 +7,7 @@ import { buildPlan, formatLeg, type PlanDay, type SightInput } from "@/lib/plan"
 import { placesErrorCopy, requestPlaces } from "@/lib/places";
 import { getTripRawServerSnapshot, parseStoredTrip, readTripRaw, subscribeTrip, type TripPlace } from "@/lib/trip";
 import { DAY_COLORS, TripMap } from "./map";
+import Mark from "../mark";
 
 function subscribeNothing() {
   return () => {};
@@ -125,7 +126,7 @@ export default function PlanPage() {
       <section className="plan-panel">
         <header className="gallery-head">
           <div>
-            <p className="mark">Swanavi</p>
+            <Mark />
             <h1 className="title">{trip?.city.title ?? "Your days"}</h1>
             <p className="region">
               {trip ? `${formatRange(trip.startDate, trip.endDate)} · ${trip.hotel?.title ?? "Your hotel"}` : "The days, in order."}
