@@ -128,6 +128,10 @@ export function listOffers(input = {}) {
     .map(publicOffer);
 }
 
+export function payableTicket(sellerId) {
+  return FIXTURES.find((row) => row.sellerId === sellerId) ?? null;
+}
+
 export function attractionById(attractionId) {
   if (typeof attractionId !== 'string' || attractionId.length === 0) {
     throw new TicketError('invalid_request', 'attractionId is required.');

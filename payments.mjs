@@ -19,6 +19,7 @@ import { randomUUID } from 'node:crypto';
 import { existsSync, mkdirSync, readFileSync, renameSync, writeFileSync } from 'node:fs';
 import { dirname } from 'node:path';
 import { STORES, getQuote } from './stores/catalog.mjs';
+import { payableTicket } from './tickets/catalog.mjs';
 
 export const BUDGET_RLUSD = '19';
 export const STATES = ['quoted', 'locked', 'paying', 'delivered', 'refunded', 'overcharged'];
@@ -101,6 +102,7 @@ export function createPayments({
   const maxBookingWei = maxBooking == null ? null : parseRlusd(String(maxBooking));
   const ceilingWei = spendCeiling == null ? null : parseRlusd(String(spendCeiling));
   const escrows = new Map();
+  const operations = new Map();
   let reserved = 0n;
   let spent = 0n;
   let refunded = 0n;
@@ -346,6 +348,8 @@ export function createPayments({
         resource: escrow.resource ?? null,
         repaired: escrow.repaired ?? null,
         returned: formatRlusd(escrow.returnedWei),
+        operationKey: escrow.operationKey ?? null,
+        deadlineSeconds: escrow.deadlineSeconds ?? null,
       })),
       sellers: storeExtra().sellers ?? [],
     };
@@ -371,6 +375,7 @@ export function createPayments({
       trip.closed = { ...saved.trip.closed, returned: saved.trip.closed.returned == null ? null : parseWei(saved.trip.closed.returned) };
     }
     escrows.clear();
+    operations.clear();
     for (const row of saved.bookings) {
       escrows.set(row.escrowId, {
         escrowId: row.escrowId,
@@ -393,7 +398,10 @@ export function createPayments({
         resource: row.resource ?? null,
         repaired: row.repaired ?? null,
         returnedWei: parseWei(row.returned),
+        operationKey: row.operationKey ?? null,
+        deadlineSeconds: row.deadlineSeconds ?? null,
       });
+      if (row.operationKey) operations.set(row.operationKey, row.escrowId);
     }
     recompute();
   }
@@ -490,7 +498,7 @@ export function createPayments({
 
   // ---- the four functions ---------------------------------------------------------------
 
-  async function createEscrow(sellerId, amount, deadlineSeconds, sku = null) {
+  async function createEscrow(sellerId, amount, deadlineSeconds, sku = null, operationKey = null) {
     sweep();
     if (typeof sellerId !== 'string' || !/^[a-z][a-z0-9-]{0,31}$/.test(sellerId)) {
       throw new PaymentError('bad_request', 'sellerId must be a short lowercase id.');
@@ -498,8 +506,23 @@ export function createPayments({
     if (!Number.isSafeInteger(deadlineSeconds) || deadlineSeconds <= 0) {
       throw new PaymentError('bad_request', 'deadlineSeconds must be a positive integer.');
     }
-    if (killed) throw new PaymentError('killed', 'New locks are stopped.', { killed: true });
+    if (operationKey != null && (typeof operationKey !== 'string' || operationKey.length < 1 || operationKey.length > 128)) {
+      throw new PaymentError('bad_request', 'operationKey must be 1 to 128 characters.');
+    }
     const amountWei = parseRlusd(amount);
+    if (operationKey != null && operations.has(operationKey)) {
+      const existing = mustGet(operations.get(operationKey));
+      const same = existing.sellerId === sellerId
+        && (existing.sku ?? null) === (sku ?? null)
+        && existing.amountWei === amountWei
+        && existing.deadlineSeconds === deadlineSeconds;
+      if (!same) {
+        throw new PaymentError('idempotency_conflict', 'operationKey is already bound to different parameters.', { escrowId: existing.escrowId });
+      }
+      return existing.escrowId;
+    }
+    if (killed) throw new PaymentError('killed', 'New locks are stopped.', { killed: true });
+    const ticket = payableTicket(sellerId);
     if (STORES.some((store) => store.storeId === sellerId)) {
       let quote;
       try { quote = getQuote(sellerId, sku); }
@@ -511,6 +534,13 @@ export function createPayments({
       // the legacy direct-voucher path when their x402 mapping is unavailable.
       if (live && !resourceOf(sellerId, sku)) {
         throw new PaymentError('seller_unavailable', 'Catalog payments require an x402 resource.');
+      }
+    } else if (ticket) {
+      if (sku !== ticket.sku || amountWei !== parseRlusd(ticket.unitAmount)) {
+        throw new PaymentError('bad_request', 'Ticket booking sku and amount must match the catalog.');
+      }
+      if (live && !resourceOf(sellerId, sku)) {
+        throw new PaymentError('seller_unavailable', 'Ticket payments require an x402 resource.');
       }
     } else if (sku !== null) {
       throw new PaymentError('bad_request', 'SKU is only supported for catalog stores.');
@@ -540,6 +570,8 @@ export function createPayments({
       x402: false,
       resource: null,
       returnedWei: 0n,
+      operationKey: null,
+      deadlineSeconds,
     };
     escrows.set(escrow.escrowId, escrow);
     const refuse = (code, reason, message, details) => {
@@ -562,6 +594,8 @@ export function createPayments({
       refuse('over_budget', 'over_budget', `Lock of ${formatRlusd(amountWei)} RLUSD exceeds remaining ${formatRlusd(remaining)} RLUSD.`, { remaining: formatRlusd(remaining) });
     }
     escrow.status = 'locked';
+    escrow.operationKey = operationKey;
+    if (operationKey) operations.set(operationKey, escrow.escrowId);
     escrow.updatedAt = now();
     recompute();
     changed(escrow);
@@ -714,7 +748,7 @@ export function createPayments({
       throw new PaymentError('channel_closed', 'The trip channel is closed. Nothing was signed.', { escrowId: escrow.escrowId, status: 'locked' });
     }
     const resourceUrl = resourceOf(escrow.sellerId, escrow.sku);
-    if (!resourceUrl && STORES.some((store) => store.storeId === escrow.sellerId)) {
+    if (!resourceUrl && (STORES.some((store) => store.storeId === escrow.sellerId) || payableTicket(escrow.sellerId))) {
       throw new PaymentError('seller_unavailable', 'Catalog payments require an x402 resource.');
     }
     const cumulative = channel.redeemed + billWei;
