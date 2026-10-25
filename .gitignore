@@ -1,0 +1,20 @@
+node_modules/
+*-state*/
+agent-state/
+merchant-state/
+bookings.json*
+.env
+.env.*
+*.env
+*.done
+*.log
+.DS_Store
+purchase.json
+merchant.lock
+
+# Hackathon-only helper files: download them from the AP4M portal (see README), never commit them.
+ap4m-hackathon-sdk*
+ap4m-agent.js
+ap4m-x402.mjs
+example-x402-*.mjs
+verify-receipt.mjs

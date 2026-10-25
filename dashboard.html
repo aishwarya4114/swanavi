@@ -1,0 +1,304 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Swanavi budget</title>
+<style>
+  :root { color-scheme: dark; }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0; font-family: "Segoe UI", Helvetica, Arial, sans-serif;
+    background: #10140f; color: #f4f1e8;
+  }
+  header, main { padding: 24px 32px; }
+  header { display: flex; justify-content: space-between; align-items: center; gap: 24px; }
+  h1 { font-size: 28px; margin: 0; letter-spacing: 0.04em; }
+  .badge {
+    font-size: 42px; font-weight: 800; letter-spacing: 0.12em;
+    padding: 8px 22px; border-radius: 8px;
+  }
+  .badge.mock { background: #f0c14a; color: #1a1404; }
+  .badge.live { background: #d24b4b; color: white; }
+  #killed { font-size: 28px; font-weight: 800; color: #1a1404; background: #e07a3d; padding: 8px 16px; border-radius: 8px; }
+  .meters { display: grid; grid-template-columns: repeat(4, 1fr); gap: 16px; }
+  .meter { background: #1c2418; border-radius: 12px; padding: 18px 20px; }
+  .meter span { display: block; font-size: 18px; color: #c8c2b4; text-transform: uppercase; letter-spacing: 0.08em; }
+  .meter strong { display: block; font-size: 64px; line-height: 1.05; margin-top: 8px; }
+  .meter.locked strong { color: #f0c14a; }
+  .meter.spent strong { color: #f2f2f2; }
+  .meter.refunded strong { color: #7dcea0; }
+  .meter.remaining strong { color: #9fd6ff; }
+  h2 { font-size: 22px; margin: 28px 0 12px; }
+  table { width: 100%; border-collapse: collapse; font-size: 18px; }
+  th, td { text-align: left; padding: 10px 8px; border-bottom: 1px solid #2c3826; vertical-align: top; white-space: pre-line; }
+  th { color: #c8c2b4; font-weight: 600; }
+  .pill { display: inline-block; padding: 2px 10px; border-radius: 999px; background: #2c3826; }
+  .pill.locked { background: #6a5314; }
+  .pill.delivered { background: #1e4d34; }
+  .pill.refunded { background: #1a3d4d; }
+  .pill.overcharged, .pill.quoted { background: #5c2a2a; }
+  .pill.paying { background: #4d3c1a; }
+  .tag { display: inline-block; font-size: 13px; font-weight: 800; letter-spacing: 0.1em; padding: 1px 8px; border-radius: 4px; margin-right: 6px; vertical-align: middle; }
+  .tag.LIVE { background: #d24b4b; color: white; }
+  .tag.MOCK { background: #f0c14a; color: #1a1404; }
+  .tag.LOCAL { background: #3a4a5c; color: #e8eef4; }
+  .sub { font-size: 15px; color: #c8c2b4; margin-top: 6px; }
+  #trip { background: #1c2418; border-radius: 12px; padding: 14px 20px; margin-top: 16px; font-size: 17px; line-height: 1.6; }
+  #trip[hidden] { display: none; }
+  #drift { color: #ff9f7a; font-weight: 700; }
+  a { color: #9fd6ff; }
+  #log { font-family: ui-monospace, monospace; font-size: 16px; white-space: pre-wrap; }
+  #gate { max-width: 520px; margin: 12vh auto; padding: 32px; }
+  #gate input, #gate button { font-size: 22px; padding: 10px 14px; }
+  #app[hidden], #gate[hidden] { display: none; }
+</style>
+</head>
+<body>
+<section id="gate">
+  <h1>Swanavi</h1>
+  <p>Enter the local token. It is not stored in this file.</p>
+  <input id="token" type="password" autocomplete="off" placeholder="X-Swanavi-Token">
+  <button id="open" type="button">Open dashboard</button>
+  <p id="gate-error"></p>
+</section>
+<div id="app" hidden>
+  <header>
+    <h1>Swanavi trip budget</h1>
+    <div id="badge" class="badge mock">MOCK</div>
+    <div id="killed" hidden>NEW LOCKS STOPPED</div>
+  </header>
+  <main>
+    <section class="meters">
+      <div class="meter locked"><span>Locked</span><strong id="reserved">–</strong></div>
+      <div class="meter spent"><span>Spent</span><strong id="spent">–</strong></div>
+      <div class="meter refunded"><span>Refunded</span><strong id="refunded">–</strong></div>
+      <div class="meter remaining"><span>Remaining</span><strong id="remaining">–</strong></div>
+    </section>
+    <p class="sub" id="source">numbers from memory (mock)</p>
+    <section id="trip" hidden></section>
+    <h2>Bookings</h2>
+    <table>
+      <thead>
+        <tr><th>Seller</th><th>Amount</th><th>State</th><th>When</th><th>Chain</th><th>Receipt</th></tr>
+      </thead>
+      <tbody id="rows"></tbody>
+    </table>
+    <h2>Requests</h2>
+    <div id="log"></div>
+  </main>
+</div>
+<script>
+const tokenInput = document.querySelector('#token');
+const gate = document.querySelector('#gate');
+const app = document.querySelector('#app');
+const rows = document.querySelector('#rows');
+const logBox = document.querySelector('#log');
+const bookings = new Map();
+const lines = [];
+const saved = sessionStorage.getItem('swanavi-token');
+if (saved) tokenInput.value = saved;
+
+document.querySelector('#open').addEventListener('click', () => connect(tokenInput.value.trim()));
+tokenInput.addEventListener('keydown', (event) => {
+  if (event.key === 'Enter') connect(tokenInput.value.trim());
+});
+if (saved) connect(saved);
+
+function headers(token) {
+  return { 'X-Swanavi-Token': token, 'Content-Type': 'application/json' };
+}
+
+async function connect(token) {
+  if (!token) return;
+  const budget = await fetch('/budget', { headers: headers(token) });
+  if (!budget.ok) {
+    document.querySelector('#gate-error').textContent = 'Token was refused.';
+    return;
+  }
+  sessionStorage.setItem('swanavi-token', token);
+  gate.hidden = true;
+  app.hidden = false;
+  paintBudget(await budget.json());
+  const list = await fetch('/escrows', { headers: headers(token) });
+  if (list.ok) {
+    for (const booking of (await list.json()).escrows) rememberBooking(booking);
+    paintRows();
+  }
+  stream(token);
+}
+
+function paintBudget(budget) {
+  document.querySelector('#reserved').textContent = budget.reserved;
+  document.querySelector('#spent').textContent = budget.spent;
+  document.querySelector('#refunded').textContent = budget.refundedTotal;
+  document.querySelector('#remaining').textContent = budget.remaining;
+  const badge = document.querySelector('#badge');
+  const live = budget.badge === 'LIVE';
+  badge.textContent = live ? 'LIVE' : 'MOCK';
+  badge.className = live ? 'badge live' : 'badge mock';
+  document.querySelector('#killed').hidden = !budget.killed;
+  document.querySelector('#source').textContent = live
+    ? 'numbers read from XRPL EVM Testnet' + (budget.block ? ' at block ' + budget.block : '') + (budget.asOf ? ' (' + budget.asOf + ')' : '') + '. Locked is this server\'s reservations inside the channel cap; spent is the channel\'s redeemed total on chain.'
+    : 'numbers from memory (mock). Nothing on chain.';
+  paintTrip(budget);
+}
+
+function paintTrip(budget) {
+  const box = document.querySelector('#trip');
+  const trip = budget.trip;
+  if (!trip) { box.hidden = true; return; }
+  box.hidden = false;
+  const parts = [];
+  parts.push(line('Trip channel', shortId(trip.channelId) + ' · ' + trip.status + ' · cap ' + trip.cap + ' · redeemed ' + trip.redeemed + (trip.settled != null ? ' · settled ' + trip.settled : ''), trip.openedTxUrl, 'opened'));
+  if (trip.merchantPayout) parts.push(line('Pays merchant wallet', trip.merchantPayout, null));
+  if (budget.fund) {
+    const f = budget.fund;
+    parts.push(line('Team budget on chain', 'deposit ' + f.deposit + ' · locked in open channels ' + f.locked + ' · paid out ' + f.spent + ' · free ' + f.free + ' · returned by closed channels ' + f.refunded, f.links && f.links.vault, 'vault'));
+  }
+  if (trip.closeTxUrl) parts.push(line('Channel closed', 'returned ' + (trip.returned == null ? '(waiting for PayoutClosed)' : trip.returned + ' RLUSD to the funding vault'), trip.payoutClosedTxUrl || trip.closeTxUrl, trip.payoutClosedTxUrl ? 'PayoutClosed' : 'ChannelClosed'));
+  if (budget.drift) {
+    const d = document.createElement('div');
+    d.id = 'drift';
+    d.textContent = 'DRIFT: chain redeemed ' + budget.drift.chainRedeemed + ' but local delivered ' + budget.drift.localDelivered + '. Check before trusting Locked.';
+    parts.push(d);
+  }
+  box.replaceChildren(...parts);
+}
+
+function line(label, text, href, linkText) {
+  const div = document.createElement('div');
+  const b = document.createElement('strong');
+  b.textContent = label + ': ';
+  div.append(b, document.createTextNode(text + ' '));
+  if (href) {
+    const a = document.createElement('a');
+    a.href = href;
+    a.textContent = linkText || 'explorer';
+    a.target = '_blank';
+    a.rel = 'noreferrer';
+    div.append(a);
+  }
+  return div;
+}
+
+function shortId(id) {
+  return id ? id.slice(0, 10) + '…' + id.slice(-4) : '';
+}
+
+function rememberBooking(booking) {
+  if (booking) bookings.set(booking.escrowId, booking);
+}
+
+function paintRows() {
+  const list = [...bookings.values()].sort((a, b) => a.createdAt < b.createdAt ? 1 : -1);
+  rows.replaceChildren(...list.map((booking) => {
+    const tr = document.createElement('tr');
+    const chain = document.createElement('td');
+    // LIVE only when the server says so: a confirmed on-chain tx with an explorer link.
+    const isLive = booking.live === true && booking.txHash && booking.explorerUrl;
+    const tag = document.createElement('span');
+    tag.className = 'tag ' + (isLive ? 'LIVE' : (booking.badge === 'LOCAL' ? 'LOCAL' : 'MOCK'));
+    tag.textContent = isLive ? 'LIVE' : (booking.badge === 'LOCAL' ? 'LOCAL' : 'MOCK');
+    chain.append(tag);
+    if (isLive) {
+      const link = document.createElement('a');
+      link.href = booking.explorerUrl;
+      link.textContent = (booking.paidVia === 'x402' ? 'x402 · ' : '') + 'VoucherRedeemed ' + booking.txHash.slice(0, 10) + '…';
+      link.target = '_blank';
+      link.rel = 'noreferrer';
+      chain.append(link);
+      if (booking.cumulativeAmount) chain.append(document.createTextNode('\ncumulative ' + booking.cumulativeAmount + ' RLUSD'));
+    } else {
+      chain.append(document.createTextNode(booking.note || 'no chain tx'));
+    }
+    const receipt = document.createElement('td');
+    if (booking.receiptUrl) {
+      const r = document.createElement('a');
+      r.href = booking.receiptUrl;
+      r.textContent = 'receipt';
+      r.target = '_blank';
+      r.rel = 'noreferrer';
+      receipt.append(r);
+      if (booking.settlement && booking.settlement.payoutTxUrl) {
+        const p = document.createElement('a');
+        p.href = booking.settlement.payoutTxUrl;
+        p.textContent = 'payout tx';
+        p.target = '_blank';
+        p.rel = 'noreferrer';
+        receipt.append(document.createTextNode('\n'), p);
+      }
+    } else {
+      receipt.textContent = booking.status === 'delivered' && isLive ? 'settling…' : '–';
+    }
+    const amount = booking.finalBill && booking.finalBill !== booking.amount
+      ? booking.amount + ' RLUSD locked\nbilled ' + booking.finalBill
+      : booking.amount + ' RLUSD';
+    tr.append(
+      cell(booking.sellerId),
+      cell(amount),
+      pill(booking.status + (booking.reason ? '\n' + booking.reason : '')),
+      cell('created ' + booking.createdAt + '\nupdated ' + (booking.updatedAt || booking.createdAt)),
+      chain,
+      receipt,
+    );
+    return tr;
+  }));
+}
+
+function cell(text) {
+  const td = document.createElement('td');
+  td.textContent = text;
+  return td;
+}
+
+function pill(status) {
+  const td = document.createElement('td');
+  const span = document.createElement('span');
+  span.className = 'pill ' + status.split('\n')[0];
+  span.textContent = status;
+  td.append(span);
+  return td;
+}
+
+function addLog(entry) {
+  lines.unshift(entry.at + '  ' + entry.method + ' ' + entry.path + '  ' + entry.status);
+  logBox.textContent = lines.slice(0, 12).join('\n');
+}
+
+async function stream(token) {
+  const response = await fetch('/events', { headers: headers(token) });
+  const reader = response.body.getReader();
+  const decoder = new TextDecoder();
+  let buffer = '';
+  while (true) {
+    const chunk = await reader.read();
+    if (chunk.done) break;
+    buffer += decoder.decode(chunk.value, { stream: true });
+    const parts = buffer.split('\n\n');
+    buffer = parts.pop();
+    for (const part of parts) apply(part);
+  }
+  setTimeout(() => stream(token), 1000);
+}
+
+function apply(part) {
+  const dataLine = part.split('\n').find((line) => line.startsWith('data: '));
+  if (!dataLine) return;
+  const event = JSON.parse(dataLine.slice(6));
+  if (event.budget) paintBudget(event.budget);
+  if (event.booking) {
+    rememberBooking(event.booking);
+    paintRows();
+  }
+  if (event.type === 'hello') {
+    if (event.budget) paintBudget(event.budget);
+    for (const booking of event.bookings || []) rememberBooking(booking);
+    paintRows();
+    for (const entry of event.log || []) addLog(entry);
+  }
+  if (event.type === 'log' && event.entry) addLog(event.entry);
+}
+</script>
+</body>
+</html>

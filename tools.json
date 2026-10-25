@@ -1,0 +1,134 @@
+{
+  "version": 3,
+  "note": "Tool list for the Python agent. Register these with AWS AgentCore yourself. This file is not AgentCore's registration format. baseUrl must be a URL the gateway can reach. Every call except GET / needs header X-Swanavi-Token. The token comes from the server's SWANAVI_TOKEN environment variable. Do not put the token in this file. The server runs in one of two modes: mock (nothing on chain; every response has mode mock and live false) or ap4m (one AP4M channel for the whole trip on XRPL EVM Testnet; a booking is live only when its response carries txHash and live true).",
+  "authHeader": "X-Swanavi-Token",
+  "tools": [
+    {
+      "name": "createEscrow",
+      "description": "Lock a quoted RLUSD amount for one seller. On success the booking status is locked and that amount is reserved out of the remaining budget. In ap4m mode remaining is read from the chain: channel cap minus redeemed minus the other local locks; the lock itself is local (badge LOCAL), nothing is signed. The server refuses a new lock when the kill switch is on (killed), when the amount is above the per-booking maximum (amount_limit), when reserved plus spent plus this amount would exceed the spend ceiling (spend_ceiling), when it is above remaining (over_budget), or in ap4m mode when the trip channel is closed (channel_closed). A refused lock stays quoted and reserves nothing.",
+      "method": "POST",
+      "path": "/escrows",
+      "inputSchema": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["sellerId", "amount", "deadlineSeconds"],
+        "properties": {
+          "sellerId": {
+            "type": "string",
+            "description": "hotel, tour, cab, or food.",
+            "enum": ["hotel", "tour", "cab", "food"]
+          },
+          "amount": {
+            "type": "string",
+            "description": "RLUSD decimal string, at most 18 decimal places. Example: \"0.01\". Do not send a JSON number unless it is a whole RLUSD amount.",
+            "pattern": "^(0|[1-9][0-9]*)(\\.[0-9]{1,18})?$"
+          },
+          "deadlineSeconds": {
+            "type": "integer",
+            "minimum": 1,
+            "description": "Seconds from now. When this passes, a locked booking is refunded locally. This is not a chain deadline."
+          }
+        }
+      }
+    },
+    {
+      "name": "release",
+      "description": "Pay a locked booking after delivery, for the full locked amount, or for finalBill when that bill is at or under the lock. Checks happen before anything is signed: seller outcome cancel is 409 seller_cancelled and fail is 409 seller_failed (lock unchanged; call refund); a finalBill above the lock is 409 overcharged (seller not paid, reservation returns to remaining). In ap4m mode with x402 sellers the server first reads the seller's HTTP 402 price: above the lock it is 409 overcharged with reason x402_price_exceeds_lock and nothing is signed; otherwise the agent signs ONE cumulative voucher in answer to the 402 and the seller submits it (response paidVia x402, resource = what the seller delivered). Without x402 sellers a passing release signs the cumulative voucher (channel redeemed so far plus this bill) and submits it itself; the response then has status delivered, txHash, explorerUrl, claimId, blockNumber, cumulativeAmount and live true, and receiptUrl fills in a few seconds later (poll getStatus). A bill under the lock frees the difference (counted in refundedTotal). If the voucher would exceed the channel cap the response is 409 over_cap and nothing is signed; if the transaction fails it is 502 redeem_failed and the lock is unchanged; if the trip channel is closed it is 409 channel_closed. Do not call release on a booking that is not locked. This call can take 10 to 20 seconds in ap4m mode.",
+      "method": "POST",
+      "path": "/escrows/{escrowId}/release",
+      "inputSchema": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["escrowId"],
+        "properties": {
+          "escrowId": {
+            "type": "string",
+            "description": "Path parameter. The id returned by createEscrow."
+          },
+          "finalBill": {
+            "type": "string",
+            "description": "Optional RLUSD decimal string. Omit it to bill the locked amount. Above the lock, release is refused."
+          }
+        }
+      }
+    },
+    {
+      "name": "refund",
+      "description": "Return a locked booking to the budget. Status becomes refunded and reason is refund. refundedTotal increases by the locked amount. A quoted booking becomes refunded without moving funds. Refunding an already refunded booking returns it unchanged. The kill switch does not block refund. No chain transaction is sent and nothing was ever signed for this booking, so txHash stays null and live is false. In ap4m mode the money is back inside the channel cap at once; it returns to the funding vault on chain when the trip is closed (closeTrip, event PayoutClosed).",
+      "method": "POST",
+      "path": "/escrows/{escrowId}/refund",
+      "inputSchema": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["escrowId"],
+        "properties": {
+          "escrowId": {
+            "type": "string",
+            "description": "Path parameter. The id returned by createEscrow."
+          }
+        }
+      }
+    },
+    {
+      "name": "getStatus",
+      "description": "Read one booking. Applies the deadline first: a locked booking past deadlineAt becomes refunded with reason deadline. The response includes status, reason, amount, finalBill, createdAt, updatedAt, deadlineAt, txHash, explorerUrl, claimId, blockNumber, cumulativeAmount, receiptUrl, settlement, channelId, chainStatus, live, badge (LIVE, LOCAL or MOCK), note and mode. live is true only when the booking has a confirmed on-chain transaction.",
+      "method": "GET",
+      "path": "/escrows/{escrowId}",
+      "inputSchema": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["escrowId"],
+        "properties": {
+          "escrowId": {
+            "type": "string",
+            "description": "Path parameter. The id returned by createEscrow."
+          }
+        }
+      }
+    },
+    {
+      "name": "getBudget",
+      "description": "Read the budget meter. Fields: total, remaining, reserved, spent, refundedTotal, maxBooking, spendCeiling, killed, mode, live, badge, source (memory or chain). In ap4m mode total is the trip channel cap, spent is the channel's redeemed total read from the chain, and the response also carries trip (channelId, status, cap, redeemed, settled, merchantPayout, explorer links) and fund (deposit, locked, spent, settled, free, refunded as the chain holds them for the whole team budget). drift is null when the local bookings agree with the chain.",
+      "method": "GET",
+      "path": "/budget",
+      "inputSchema": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {}
+      }
+    },
+    {
+      "name": "closeTrip",
+      "description": "End the trip. Every still-locked booking becomes refunded with reason trip_closed. In ap4m mode this settles any unpaid redeemed amount, closes the trip channel and waits for the vault to return the unused cap: the response has closeTx, payoutClosedTx, their explorer URLs and returned (RLUSD that went back to the funding vault). After this no new lock is possible on this server (channel_closed). Ask the human before calling this: it is one of the three channel budget slots. Can take about 60 seconds.",
+      "method": "POST",
+      "path": "/trip/close",
+      "inputSchema": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {}
+      }
+    },
+    {
+      "name": "fund",
+      "description": "Mock mode only. Add amount to the local budget total. method rlusd is a local ledger credit: simulated is false, label is \"local ledger credit\", and onChain is false. It is not a chain deposit. method crypto and method card are simulated: simulated is true and label is SIMULATED. Funding does not raise the spend ceiling. In ap4m mode the response is 409 live_mode: funding happens on the AP4M participant portal.",
+      "method": "POST",
+      "path": "/fund",
+      "inputSchema": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["method", "amount"],
+        "properties": {
+          "method": {
+            "type": "string",
+            "enum": ["rlusd", "crypto", "card"]
+          },
+          "amount": {
+            "type": "string",
+            "description": "RLUSD decimal string to add to the local budget.",
+            "pattern": "^(0|[1-9][0-9]*)(\\.[0-9]{1,18})?$"
+          }
+        }
+      }
+    }
+  ]
+}
