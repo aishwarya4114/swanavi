@@ -17,6 +17,8 @@ import { dirname, join } from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import { createMerchants, finishEscrow } from './merchants.mjs';
 import { API_VERSION, PaymentError, createPayments } from './payments.mjs';
+import { findStores, getQuote, searchCatalog } from './stores/catalog.mjs';
+import { handleStoreMcp } from './stores/mcp.mjs';
 
 const DEFAULT_PORT = 8787;
 const BODY_LIMIT = 32_768;
@@ -171,6 +173,24 @@ async function route(method, parts, body, req, res, payments, merchants, clients
     }
     return send(res, 200, await payments.setKilled(body.enabled));
   }
+  if (method === 'GET' && parts.length === 1 && parts[0] === 'stores') {
+    return send(res, 200, { stores: storesFromQuery(req) });
+  }
+  if (method === 'GET' && parts.length === 3 && parts[0] === 'stores' && parts[2] === 'catalog') {
+    return send(res, 200, { items: asStore(() => searchCatalog(parts[1], { query: searchParams(req).get('query') ?? undefined })) });
+  }
+  if (method === 'POST' && parts.length === 3 && parts[0] === 'stores' && parts[2] === 'quote') {
+    if (typeof body.sku !== 'string' || body.sku.length === 0) {
+      throw new PaymentError('bad_request', 'sku is required.');
+    }
+    return send(res, 200, asStore(() => getQuote(parts[1], body.sku)));
+  }
+  if (method === 'POST' && parts.length === 1 && parts[0] === 'mcp') {
+    return sendMcp(res, handleStoreMcp(body));
+  }
+  if (method === 'POST' && parts.length === 3 && parts[0] === 'm' && parts[2] === 'mcp') {
+    return sendMcp(res, handleStoreMcp(body, parts[1]));
+  }
   if (method === 'GET' && parts.length === 1 && parts[0] === 'merchants') {
     return send(res, 200, { merchants: merchants.list() });
   }
@@ -309,6 +329,44 @@ function cors() {
     'Access-Control-Allow-Headers': 'Content-Type, X-Swanavi-Token',
     'Cache-Control': 'no-store',
   };
+}
+
+function asStore(read) {
+  try {
+    return read();
+  } catch (error) {
+    if (error.code === 'store_not_found' || error.code === 'sku_not_found') {
+      throw new PaymentError('not_found', error.message);
+    }
+    throw error;
+  }
+}
+
+function storesFromQuery(req) {
+  const params = searchParams(req);
+  const near = params.get('lat') != null && params.get('lng') != null
+    ? { lat: Number(params.get('lat')), lng: Number(params.get('lng')) }
+    : undefined;
+  const radius = params.get('radiusKm');
+  return findStores({
+    city: params.get('city') ?? undefined,
+    category: params.get('category') ?? undefined,
+    near,
+    radiusKm: radius == null ? undefined : Number(radius),
+  });
+}
+
+function searchParams(req) {
+  return new URL(req.url ?? '/', 'http://127.0.0.1').searchParams;
+}
+
+function sendMcp(res, result) {
+  if (result.status === 202) {
+    writeHead(res, 202, 0);
+    res.end();
+    return;
+  }
+  send(res, result.status, result.body);
 }
 
 function send(res, status, body) {

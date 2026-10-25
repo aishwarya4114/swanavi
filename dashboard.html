@@ -51,6 +51,13 @@
   #log { font-family: ui-monospace, monospace; font-size: 16px; white-space: pre-wrap; }
   #gate { max-width: 520px; margin: 12vh auto; padding: 32px; }
   #gate input, #gate button { font-size: 22px; padding: 10px 14px; }
+  .demo { display: flex; align-items: center; gap: 16px; margin-top: 20px; flex-wrap: wrap; }
+  .demo button {
+    font-size: 20px; font-weight: 700; padding: 12px 18px;
+    background: #f0c14a; color: #1a1404; border: 0; border-radius: 8px; cursor: pointer;
+  }
+  .demo button:disabled { opacity: 0.6; cursor: wait; }
+  #demo-status { font-size: 18px; margin: 0; }
   #app[hidden], #gate[hidden] { display: none; }
 </style>
 </head>
@@ -76,6 +83,10 @@
       <div class="meter remaining"><span>Remaining</span><strong id="remaining">–</strong></div>
     </section>
     <p class="sub" id="source">numbers from memory (mock)</p>
+    <div class="demo">
+      <button id="book-bikes" type="button">Book Central Park bikes</button>
+      <p id="demo-status">Quotes the bike shop, locks the price, then releases it.</p>
+    </div>
     <section id="trip" hidden></section>
     <h2>Bookings</h2>
     <table>
@@ -100,6 +111,7 @@ const saved = sessionStorage.getItem('swanavi-token');
 if (saved) tokenInput.value = saved;
 
 document.querySelector('#open').addEventListener('click', () => connect(tokenInput.value.trim()));
+document.querySelector('#book-bikes').addEventListener('click', bookBikes);
 tokenInput.addEventListener('keydown', (event) => {
   if (event.key === 'Enter') connect(tokenInput.value.trim());
 });
@@ -259,6 +271,65 @@ function pill(status) {
   span.textContent = status;
   td.append(span);
   return td;
+}
+
+async function bookBikes() {
+  const button = document.querySelector('#book-bikes');
+  const status = document.querySelector('#demo-status');
+  const token = sessionStorage.getItem('swanavi-token');
+  button.disabled = true;
+  try {
+    status.textContent = 'Asking the bike shop for a quote…';
+    const quoted = await fetch('/mcp', {
+      method: 'POST',
+      headers: headers(token),
+      body: JSON.stringify({
+        jsonrpc: '2.0',
+        id: 1,
+        method: 'tools/call',
+        params: { name: 'get_quote', arguments: { storeId: 'central-park-bikes', sku: 'BIKE-2H' } },
+      }),
+    });
+    const quoteBody = await quoted.json();
+    const quote = quoteBody.result && quoteBody.result.structuredContent;
+    if (!quoted.ok || !quote || quoteBody.result.isError) {
+      status.textContent = (quoteBody.error && quoteBody.error.message) || (quoteBody.result && quoteBody.result.content && quoteBody.result.content[0] && quoteBody.result.content[0].text) || 'Quote failed.';
+      return;
+    }
+    status.textContent = 'Quoted ' + quote.amount + ' RLUSD. Locking it…';
+    const locked = await fetch('/escrows', {
+      method: 'POST',
+      headers: headers(token),
+      body: JSON.stringify({ sellerId: quote.sellerId, amount: quote.amount, deadlineSeconds: 600 }),
+    });
+    const booking = await locked.json();
+    if (!locked.ok) {
+      status.textContent = booking.message || 'Lock refused.';
+      return;
+    }
+    rememberBooking(booking);
+    paintRows();
+    status.textContent = 'Locked. Releasing the payment…';
+    const paid = await fetch('/escrows/' + booking.escrowId + '/release', {
+      method: 'POST',
+      headers: headers(token),
+      body: '{}',
+    });
+    const done = await paid.json();
+    rememberBooking(done);
+    paintRows();
+    if (!paid.ok) {
+      status.textContent = done.message || 'Release refused.';
+      return;
+    }
+    const budget = await fetch('/budget', { headers: headers(token) });
+    if (budget.ok) paintBudget(await budget.json());
+    status.textContent = 'Delivered ' + (done.finalBill || done.amount) + ' RLUSD to ' + done.sellerId + '. Badge ' + done.badge + '.';
+  } catch (error) {
+    status.textContent = error.message || 'The booking did not finish.';
+  } finally {
+    button.disabled = false;
+  }
 }
 
 function addLog(entry) {

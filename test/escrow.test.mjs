@@ -1058,7 +1058,10 @@ test('server requires a token, warns on an open host, and serves the dashboard',
 
 test('tools.json names the agent calls and does not contain a token', () => {
   const tools = JSON.parse(readFileSync(new URL('../tools.json', import.meta.url), 'utf8'));
-  assert.deepEqual(tools.tools.map((tool) => tool.name), ['createEscrow', 'release', 'refund', 'getStatus', 'getBudget', 'closeTrip', 'fund']);
+  assert.deepEqual(tools.tools.map((tool) => tool.name), [
+    'createEscrow', 'release', 'refund', 'getStatus', 'getBudget', 'closeTrip', 'fund',
+    'listStores', 'searchStoreCatalog', 'getStoreQuote',
+  ]);
   for (const tool of tools.tools) {
     assert.equal(typeof tool.description, 'string');
     assert.equal(tool.inputSchema.type, 'object');

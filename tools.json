@@ -15,8 +15,8 @@
         "properties": {
           "sellerId": {
             "type": "string",
-            "description": "hotel, tour, cab, or food.",
-            "enum": ["hotel", "tour", "cab", "food"]
+            "description": "A payment seller (hotel, tour, cab, food) or a storeId returned by listStores.",
+            "pattern": "^[a-z][a-z0-9-]{0,31}$"
           },
           "amount": {
             "type": "string",
@@ -127,6 +127,53 @@
             "description": "RLUSD decimal string to add to the local budget.",
             "pattern": "^(0|[1-9][0-9]*)(\\.[0-9]{1,18})?$"
           }
+        }
+      }
+    },
+    {
+      "name": "listStores",
+      "description": "List the nine demo stores in New York. These are shops, not restaurants. city accepts New York, New York City, NYC, or Manhattan. Omit city to list every store. near is optional lat and lng query params with radiusKm. Each store has storeId, which is also the sellerId for createEscrow, and mcpPath for its own MCP server.",
+      "method": "GET",
+      "path": "/stores",
+      "inputSchema": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "city": { "type": "string" },
+          "category": { "type": "string", "enum": ["activity", "shopping"] },
+          "lat": { "type": "number" },
+          "lng": { "type": "number" },
+          "radiusKm": { "type": "number" }
+        }
+      }
+    },
+    {
+      "name": "searchStoreCatalog",
+      "description": "List bookable items at one demo store. Nothing is charged. storeId is a path parameter.",
+      "method": "GET",
+      "path": "/stores/{storeId}/catalog",
+      "inputSchema": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["storeId"],
+        "properties": {
+          "storeId": { "type": "string" },
+          "query": { "type": "string" }
+        }
+      }
+    },
+    {
+      "name": "getStoreQuote",
+      "description": "Quote one SKU at a demo store. No money moves. The response amount and sellerId are what createEscrow locks. The Times Square souvenir quote is an unverified 5 RLUSD trap.",
+      "method": "POST",
+      "path": "/stores/{storeId}/quote",
+      "inputSchema": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["storeId", "sku"],
+        "properties": {
+          "storeId": { "type": "string", "description": "Path parameter." },
+          "sku": { "type": "string" }
         }
       }
     }
