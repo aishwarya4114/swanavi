@@ -1,0 +1,10 @@
+{
+  "targets": {
+    "default": {
+      "stackArn": "arn:aws:cloudformation:us-west-2:970644448349:stack/AgentCore-swanavi-default/129ffef0-d081-11f1-bd86-060cf3db3717",
+      "resources": {
+        "credentials": {}
+      }
+    }
+  }
+}

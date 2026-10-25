@@ -21,3 +21,28 @@ ap4m-agent.js
 ap4m-x402.mjs
 example-x402-*.mjs
 verify-receipt.mjs
+
+# Empty examples are safe. Real env files stay ignored by the rules above.
+!**/.env.example
+
+# Python agents
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+*.bak
+
+# Next.js build output (the original app ignores Swanavi/.next/ above)
+.next/
+
+# AgentCore local state. Commit the deployed-state binding only.
+agentcore/.cache/
+agentcore/.cli/*
+!agentcore/.cli/deployed-state.json
+agentcore/.last-mock-escrow.json
+agentcore/cdk/cdk.out/
+agentcore/cdk/dist/
+
+# Local archives, not source
+frontend-backup/
+Swanavi.zip
