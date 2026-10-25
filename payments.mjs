@@ -87,10 +87,12 @@ export function createPayments({
   log = console,
   settleDelayMs = 5000,
   resumeWaitMs = 6000,
+  guardrailMode = 'compatibility',
 } = {}) {
   if (mode !== 'mock' && mode !== 'ap4m') throw new PaymentError('bad_request', 'mode must be mock or ap4m.');
   if (typeof now !== 'function') throw new PaymentError('bad_request', 'now must be a function.');
   if (mode === 'ap4m' && !executor) throw new PaymentError('bad_request', 'ap4m mode needs a live executor. There is no stub.');
+  if (guardrailMode !== 'compatibility' && guardrailMode !== 'required') throw new PaymentError('bad_request', 'guardrailMode must be compatibility or required.');
   const live = mode === 'ap4m';
 
   let budgetWei = parseRlusd(budget);
@@ -522,6 +524,7 @@ export function createPayments({
       return existing.escrowId;
     }
     if (killed) throw new PaymentError('killed', 'New locks are stopped.', { killed: true });
+    refuseWithoutPolicy();
     const ticket = payableTicket(sellerId);
     if (STORES.some((store) => store.storeId === sellerId)) {
       let quote;
@@ -614,6 +617,7 @@ export function createPayments({
     if (escrow.status !== 'locked') {
       throw new PaymentError('invalid_state', `Cannot release an escrow that is ${escrow.status}.`, { escrowId, status: escrow.status });
     }
+    refuseWithoutPolicy({ escrowId, status: 'locked' });
     const outcome = sellerOf(escrow.sellerId);
     if (outcome === 'cancel' || outcome === 'fail') {
       const code = outcome === 'cancel' ? 'seller_cancelled' : 'seller_failed';
@@ -645,6 +649,16 @@ export function createPayments({
     const run = chainQueue.then(() => redeemLive(escrow, billWei));
     chainQueue = run.catch(() => {});
     return run;
+  }
+
+  /**
+   * Required guardrail mode has no trusted policy authority in this checkout yet (see
+   * docs/GUARDRAIL_CONFIRMATION_SPEC.md), so every new lock and every new signature fails closed.
+   * Confirmation of an already signed payment is not gated.
+   */
+  function refuseWithoutPolicy(details = {}) {
+    if (guardrailMode !== 'required') return;
+    throw new PaymentError('policy_required', 'Required guardrail mode is on and no confirmed trip policy can authorize this payment. Nothing was reserved or signed.', details);
   }
 
   const operationOf = (escrow) => escrow.escrowId.replaceAll('_', '-');
@@ -763,7 +777,8 @@ export function createPayments({
       try {
         q = await executor.quote(resourceUrl);
       } catch (error) {
-        throw new PaymentError('seller_unavailable', `Seller ${escrow.sellerId} gave no 402 at ${resourceUrl}: ${String(error.message).slice(0, 160)}. Nothing was signed.`, {
+        const code = error.code === 'challenge_mismatch' ? 'challenge_mismatch' : 'seller_unavailable';
+        throw new PaymentError(code, `Seller ${escrow.sellerId} gave no acceptable 402 at ${resourceUrl}: ${String(error.message).slice(0, 160)}. Nothing was signed.`, {
           escrowId: escrow.escrowId, status: 'locked', resourceUrl,
         });
       }
@@ -1087,6 +1102,14 @@ export function createPayments({
     exportState,
     sweep,
     loadedSellers,
+    guardrailMode,
+    /** The escrow already bound to operationKey, or null. Never creates one. */
+    escrowForOperation(operationKey) { return operations.get(operationKey) ?? null; },
+    /** True when chain-side evidence that a payment was signed exists for this escrow. */
+    hasSignedPayment(escrowId) {
+      const escrow = mustGet(escrowId);
+      return escrow.status === 'delivered' || (escrow.status === 'paying' && escrow.cumulativeWei !== null) || Boolean(retainedPurchase(escrow));
+    },
     setSellerStatus(fn) { sellerOf = fn; },
     setSellerResource(fn) { resourceOf = fn; },
     setOnEvent(fn) { onChange = fn; },

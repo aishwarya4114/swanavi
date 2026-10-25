@@ -270,6 +270,65 @@
           "orderId": { "type": "string", "description": "Path parameter." }
         }
       }
+    },
+    {
+      "name": "prepareStorePurchase",
+      "description": "Prepare one demo shop item for the user to approve in the host app. maximumAmount is the user's upper bound; the server uses the catalog price. Signs and reserves nothing. Expires in 120 seconds. Prefer the purchase MCP target POST /stores/purchases/mcp.",
+      "method": "POST",
+      "path": "/stores/purchases",
+      "inputSchema": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["storeId", "sku", "maximumAmount", "idempotencyKey"],
+        "properties": {
+          "storeId": { "type": "string" },
+          "sku": { "type": "string" },
+          "maximumAmount": { "type": "string" },
+          "idempotencyKey": { "type": "string", "minLength": 1, "maxLength": 128 }
+        }
+      }
+    },
+    {
+      "name": "purchaseStoreItem",
+      "description": "Pay for a shop purchase the user approved. 202 with status paying is pending: poll getStorePurchase, never prepare again. Retrying the same purchaseId never pays twice.",
+      "method": "POST",
+      "path": "/stores/purchases/{purchaseId}/pay",
+      "inputSchema": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["purchaseId"],
+        "properties": {
+          "purchaseId": { "type": "string", "description": "Path parameter." }
+        }
+      }
+    },
+    {
+      "name": "getStorePurchase",
+      "description": "Read one shop purchase with its transaction evidence and settlement receipt. Never starts a payment.",
+      "method": "GET",
+      "path": "/stores/purchases/{purchaseId}",
+      "inputSchema": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["purchaseId"],
+        "properties": {
+          "purchaseId": { "type": "string", "description": "Path parameter." }
+        }
+      }
+    },
+    {
+      "name": "cancelStorePurchase",
+      "description": "Cancel an unpaid shop purchase. Paid or possibly paid purchases return cannot_cancel.",
+      "method": "POST",
+      "path": "/stores/purchases/{purchaseId}/cancel",
+      "inputSchema": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["purchaseId"],
+        "properties": {
+          "purchaseId": { "type": "string", "description": "Path parameter." }
+        }
+      }
     }
   ],
   "ticketMcp": {
@@ -277,5 +336,12 @@
     "path": "/tickets/mcp",
     "authHeader": "X-Swanavi-Token",
     "approvalExcluded": "POST /tickets/approvals is not a tool. It requires header X-Ticket-Approval-Token, which is not given to the agent."
+  },
+  "storePurchaseMcp": {
+    "method": "POST",
+    "path": "/stores/purchases/mcp",
+    "authHeader": "X-Swanavi-Token",
+    "tools": ["prepare_store_purchase", "purchase_store_item", "get_store_purchase", "cancel_store_purchase"],
+    "approvalExcluded": "POST /stores/purchases/{purchaseId}/approve is not a tool. It requires header X-Store-Approval-Token (server STORE_APPROVAL_TOKEN), which is not given to the agent or the Gateway."
   }
 }

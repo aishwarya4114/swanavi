@@ -1200,8 +1200,10 @@ test('tools.json names the agent calls and does not contain a token', () => {
     'createEscrow', 'release', 'refund', 'getStatus', 'getBudget', 'closeTrip', 'fund',
     'listStores', 'searchStoreCatalog', 'getStoreQuote',
     'listTicketOffers', 'getTicketSlots', 'quoteTicket', 'purchaseTicket', 'getTicketOrder', 'cancelTicketHold',
+    'prepareStorePurchase', 'purchaseStoreItem', 'getStorePurchase', 'cancelStorePurchase',
   ]);
   assert.equal(tools.tools.some((tool) => tool.path === '/tickets/approvals'), false);
+  assert.equal(tools.tools.some((tool) => tool.path.endsWith('/approve')), false);
   for (const tool of tools.tools) {
     assert.equal(typeof tool.description, 'string');
     assert.equal(tool.inputSchema.type, 'object');

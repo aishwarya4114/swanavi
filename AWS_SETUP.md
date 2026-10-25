@@ -337,6 +337,44 @@ prices differ from the live seller defaults, so use the configured 0.01 demo
 price. Check the delivered result for `paidVia: "x402"`, `live: true`, and a
 transaction hash. In mock mode no x402 network request or chain payment occurs.
 
+### Shop purchase target (prepare, approve, pay)
+
+The preferred agent path for shop items is the purchase MCP target, not the raw
+escrow routes below. Agent instructions are in `docs/MCP_SHOP_AGENT_HANDOFF.md`.
+
+1. Download the approved AP4M helper files from the hackathon portal. Do not
+   commit them. Use an already open, funded testnet channel and its merchant.
+2. Start `node x402_sellers.mjs` and `node server.mjs` on the same host. Set
+   `PAYMENTS_MODE=ap4m`, `X402_SELLERS=http://127.0.0.1`, `SWANAVI_TOKEN`,
+   `STORE_APPROVAL_TOKEN`, and explicit limits. For the bike rehearsal use
+   `MAX_BOOKING_RLUSD=0.30` and `REAL_SPEND_CEILING=0.50`, and check the
+   channel has enough remaining cap. Do not raise an existing operator's limits
+   or open a channel for this.
+3. Gateway must reach the service over HTTPS. Only the service must reach the
+   sellers. Keep ports 4311 to 4343 private. Separate containers do not share
+   localhost. URL construction fixes the port and `/resource`, so a proxy must
+   map `X402_SELLERS` host plus each port to that seller's `/resource`.
+4. Register the purchase target exactly like section 2a, with name
+   `swanavi-store-purchases` and endpoint
+   `SWANAVI_BASE_URL + "/stores/purchases/mcp"`. Keep the discovery target from
+   section 2. The Gateway credential provider carries `X-Swanavi-Token` only.
+   `STORE_APPROVAL_TOKEN` stays with the host app.
+5. Discovery on the purchase target must list `prepare_store_purchase`,
+   `purchase_store_item`, `get_store_purchase` and `cancel_store_purchase`, and
+   no approval tool.
+6. Rehearse with `node scripts/shop_smoke.mjs`. It refuses a live server unless
+   `SHOP_SMOKE_ALLOW_SPEND=1`, which only the operator sets.
+
+Shop state lives in `shop-state.json` next to `bookings.json` (or
+`shop-state/state.json`). Keep it, `bookings.json`, `agent-state/` and
+`merchant-state/` on a persistent volume. A state file from another mode or
+channel is refused, not deleted. Run one replica.
+
+`GUARDRAIL_MODE=required` makes shop preparation, new escrows and new
+signatures fail closed until the confirmed trip policy from
+`docs/GUARDRAIL_CONFIRMATION_SPEC.md` exists. Without it the server logs that it
+runs in compatibility mode.
+
 ### Agent example: catalog lookup to bike purchase
 
 The example limits above allow a 0.15 RLUSD bike purchase within a 0.50 RLUSD

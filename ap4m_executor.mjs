@@ -7,7 +7,8 @@
  * exactly the cumulative amount that payments.mjs armed, with zero value, to the ledger.
  * Anything else is refused before it leaves the process. The key is never logged.
  *
- * x402: quote() reads a seller's 402 challenge and signs nothing. buy() refuses a price above
+ * x402: quote() reads a seller's 402 challenge, signs nothing, and refuses a challenge whose network,
+ * asset, ledger, channel, payTo or resource path is not this trip's (x402_challenge.mjs). buy() refuses a price above
  * the maximum before any signature, then answers the 402 with one cumulative voucher; the
  * seller (merchant) submits the redemption, so no transaction leaves this process for it.
  *
@@ -25,6 +26,7 @@ import { join } from 'node:path';
 import { ethers } from 'ethers';
 import { decodeX402PaymentRequired } from '@ap4m/sdk';
 import { buyResource, loadX402Context } from './ap4m-x402.mjs';
+import { checkPaymentRequired } from './x402_challenge.mjs';
 
 const require = createRequire(import.meta.url);
 const sdk = require('./ap4m-hackathon-sdk.js');
@@ -260,7 +262,10 @@ export function createExecutor({ key, channelId, apiUrl, teamName, rpcUrl, explo
         throw new ExecutorError('no_402', `Seller at ${resourceUrl} answered HTTP ${response.status} ${body?.error ?? ''}, not a 402 payment requirement.`);
       }
       const required = decodeX402PaymentRequired(response.headers.get('PAYMENT-REQUIRED') ?? '');
-      const accepted = required.accepts[0];
+      const channel = await ledger.channels(channelId);
+      const accepted = checkPaymentRequired(required, {
+        resourceUrl, chainId, asset: tokenAddress, ledger: ledgerAddress, channelId, payTo: channel.payout,
+      });
       return {
         resourceUrl,
         price: BigInt(accepted.amount),
