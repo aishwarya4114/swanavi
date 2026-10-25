@@ -16,16 +16,19 @@ import { createServer } from 'node:http';
 import { dirname, join } from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import { createMerchants, finishEscrow } from './merchants.mjs';
-import { API_VERSION, PaymentError, createPayments } from './payments.mjs';
+import { API_VERSION, PaymentError, createPayments, formatRlusd } from './payments.mjs';
 import { findStores, getQuote, searchCatalog } from './stores/catalog.mjs';
 import { handleStoreMcp } from './stores/mcp.mjs';
+import { TicketError } from './tickets/errors.mjs';
+import { handleTicketMcp } from './tickets/mcp.mjs';
+import { createTicketService } from './tickets/service.mjs';
 
 const DEFAULT_PORT = 8787;
 const BODY_LIMIT = 32_768;
 const here = dirname(fileURLToPath(import.meta.url));
 const dashboardHtml = readFileSync(join(here, 'dashboard.html'));
 
-export function createHandler({ payments, merchants, token }) {
+export function createHandler({ payments, merchants, token, tickets, approvalToken = null }) {
   const clients = new Set();
   const requestLog = [];
 
@@ -72,7 +75,7 @@ export function createHandler({ payments, merchants, token }) {
       authorize(req, token);
       const parts = url.pathname.split('/').filter(Boolean);
       const body = req.method === 'POST' ? await readBody(req) : {};
-      await route(req.method ?? 'GET', parts, body, req, res, payments, merchants, clients, requestLog);
+      await route(req.method ?? 'GET', parts, body, req, res, payments, merchants, clients, requestLog, tickets, approvalToken);
       remember(req.method, url.pathname, res.statusCode || 200);
     } catch (error) {
       const code = error instanceof PaymentError ? error.code : 'internal';
@@ -94,6 +97,11 @@ export async function startServer({
   mode = 'mock',
   executor = null,
   x402BaseUrl = null,
+  tickets = null,
+  approvalToken = null,
+  ticketStatePath = null,
+  channelId = null,
+  now = null,
   log = console,
 } = {}) {
   const expected = token ?? process.env.SWANAVI_TOKEN;
@@ -120,8 +128,21 @@ export async function startServer({
     reconciled = await pay.reconcile();
     log.log?.(`reconciled ${reconciled.checked} booking(s) with the chain; changes: ${JSON.stringify(reconciled.changes)}${reconciled.drift ? `; DRIFT ${JSON.stringify(reconciled.drift)}` : ''}`);
   }
-  const server = createServer(createHandler({ payments: pay, merchants: shops, token: expected }));
-  const timer = setInterval(() => pay.sweep(), 1000);
+  const approval = approvalToken ?? process.env.TICKET_APPROVAL_TOKEN ?? null;
+  const readSellerPrice = pay.live && executor && typeof executor.quote === 'function'
+    ? async (sellerId, sku) => formatRlusd((await executor.quote(shops.resourceFor(sellerId, sku))).price)
+    : null;
+  const desk = tickets ?? createTicketService({
+    payments: pay,
+    statePath: ticketStatePath ?? join(here, 'tickets-state', 'state.json'),
+    now: now ?? (() => Date.now()),
+    mode: pay.mode,
+    channelId: pay.live ? (executor?.channelId ?? channelId ?? null) : null,
+    readSellerPrice,
+  });
+  await desk.reconcile();
+  const server = createServer(createHandler({ payments: pay, merchants: shops, token: expected, tickets: desk, approvalToken: approval }));
+  const timer = setInterval(() => { pay.sweep(); desk.sweep().catch((error) => log.warn?.(`ticket sweep failed: ${String(error.message).slice(0, 120)}`)); }, 1000);
   timer.unref();
   server.on('close', () => { clearInterval(timer); pay.stop?.(); });
   return new Promise((resolve, reject) => {
@@ -129,12 +150,12 @@ export async function startServer({
     server.listen(port, host, () => {
       const address = server.address();
       const bound = typeof address === 'object' && address ? address.port : port;
-      resolve({ server, host, port: bound, url: `http://${host}:${bound}`, payments: pay, merchants: shops, reconciled });
+      resolve({ server, host, port: bound, url: `http://${host}:${bound}`, payments: pay, merchants: shops, tickets: desk, reconciled });
     });
   });
 }
 
-async function route(method, parts, body, req, res, payments, merchants, clients, requestLog) {
+async function route(method, parts, body, req, res, payments, merchants, clients, requestLog, tickets, approvalToken) {
   if (method === 'GET' && parts.length === 1 && parts[0] === 'health') {
     return send(res, 200, {
       ok: true,
@@ -183,6 +204,9 @@ async function route(method, parts, body, req, res, payments, merchants, clients
     }
     return send(res, 200, asStore(() => getQuote(parts[1], body.sku)));
   }
+  if (parts[0] === 'tickets') {
+    return dispatchTickets(method, parts, body, req, res, tickets, approvalToken);
+  }
   if (method === 'POST' && parts.length === 1 && parts[0] === 'mcp') {
     return sendMcp(res, handleStoreMcp(body));
   }
@@ -223,6 +247,85 @@ async function route(method, parts, body, req, res, payments, merchants, clients
     return send(res, 200, await finishEscrow(payments, merchants, parts[1]));
   }
   throw new PaymentError('not_found', `No route for ${method} /${parts.join('/')}.`);
+}
+
+async function dispatchTickets(method, parts, body, req, res, tickets, approvalToken) {
+  try {
+    if (!tickets) throw new TicketError('not_found', 'Ticket service is not configured.');
+    if (method === 'GET' && parts.length === 2 && parts[1] === 'offers') {
+      return send(res, 200, await tickets.listOffers(offersInput(req)));
+    }
+    if (method === 'GET' && parts.length === 4 && parts[1] === 'offers' && parts[3] === 'slots') {
+      const params = onlyQuery(req, ['date']);
+      if (!params.has('date')) throw new TicketError('invalid_request', 'date is required.');
+      return send(res, 200, await tickets.getSlots({ attractionId: parts[2], date: params.get('date') }));
+    }
+    if (method === 'POST' && parts.length === 2 && parts[1] === 'quotes') {
+      return send(res, 201, await tickets.quote(body));
+    }
+    if (method === 'POST' && parts.length === 2 && parts[1] === 'purchases') {
+      const result = await tickets.purchase(body);
+      const pending = result.order.status === 'payment_pending' || result.order.status === 'ticket_pending';
+      return send(res, pending ? 202 : 200, result);
+    }
+    if (method === 'GET' && parts.length === 3 && parts[1] === 'orders') {
+      return send(res, 200, await tickets.getOrder({ orderId: parts[2] }));
+    }
+    if (method === 'POST' && parts.length === 4 && parts[1] === 'orders' && parts[3] === 'cancel') {
+      return send(res, 200, await tickets.cancel({ orderId: parts[2] }));
+    }
+    if (method === 'POST' && parts.length === 2 && parts[1] === 'approvals') {
+      authorizeApproval(req, approvalToken);
+      return send(res, 200, await tickets.approve(body));
+    }
+    if (method === 'POST' && parts.length === 2 && parts[1] === 'mcp') {
+      return sendMcp(res, await handleTicketMcp(body, tickets));
+    }
+    throw new TicketError('not_found', `No route for ${method} /${parts.join('/')}.`);
+  } catch (error) {
+    if (res.headersSent) throw error;
+    const code = error instanceof TicketError ? error.code : (error instanceof PaymentError ? error.code : 'invalid_request');
+    const status = error instanceof TicketError ? error.status : (error instanceof PaymentError ? statusFor(error.code) : 400);
+    return send(res, status, {
+      error: { code, message: error instanceof Error ? error.message : 'Request failed.' },
+      ...(error instanceof TicketError && error.orderId ? { orderId: error.orderId } : {}),
+    });
+  }
+}
+
+function offersInput(req) {
+  const params = onlyQuery(req, ['city', 'indoor']);
+  if (!params.has('city')) throw new TicketError('invalid_request', 'city must be New York.');
+  const input = { city: params.get('city') };
+  if (!params.has('indoor')) return input;
+  const indoor = params.get('indoor');
+  if (indoor === 'true') input.indoor = true;
+  else if (indoor === 'false') input.indoor = false;
+  else throw new TicketError('invalid_request', 'indoor must be true or false.');
+  return input;
+}
+
+function onlyQuery(req, allowed) {
+  const params = searchParams(req);
+  for (const key of params.keys()) {
+    if (!allowed.includes(key)) throw new TicketError('invalid_request', `Unknown field ${key}.`);
+  }
+  return params;
+}
+
+function authorizeApproval(req, expected) {
+  if (typeof expected !== 'string' || expected.length === 0) {
+    throw new TicketError('unauthorized', 'Send header X-Ticket-Approval-Token.');
+  }
+  const header = req.headers['x-ticket-approval-token'];
+  if (typeof header !== 'string') {
+    throw new TicketError('unauthorized', 'Send header X-Ticket-Approval-Token.');
+  }
+  const got = Buffer.from(header);
+  const want = Buffer.from(expected);
+  if (got.length !== want.length || !timingSafeEqual(got, want)) {
+    throw new TicketError('unauthorized', 'Send header X-Ticket-Approval-Token.');
+  }
 }
 
 async function fundResponse(payments, body) {
@@ -402,6 +505,7 @@ function statusFor(code) {
     channel_closed: 409,
     live_mode: 409,
     in_progress: 409,
+    idempotency_conflict: 409,
     seller_unavailable: 502,
     redeem_failed: 502,
     redeem_unconfirmed: 503,

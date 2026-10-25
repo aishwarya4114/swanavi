@@ -393,6 +393,46 @@ In ap4m the freed amount is back inside the channel cap at once (`remaining` ris
 
 Reads the seller switch: `cancel` and `fail` call `refund`; `deliver` calls `release`, with the switch's `finalBill` when set. Same responses as those routes.
 
+## Demo tickets
+
+An escrow in `delivered` means the payment completed. It does not mean someone attended an attraction. Ticket orders use `quoted`, `payment_pending`, `ticket_pending`, `issued`, `cancelled`, `expired`, and `failed`.
+
+`POST /tickets/mcp` is a separate MCP target for the agent. It takes `X-Swanavi-Token`. The tool list is `list_ticket_offers`, `get_ticket_slots`, `quote_ticket`, `purchase_ticket`, `get_ticket_order`, and `cancel_ticket_hold`. Approval is not one of those tools.
+
+`POST /tickets/approvals` with `{ "quoteId" }` records the traveler's confirmation. Send `X-Swanavi-Token` and `X-Ticket-Approval-Token`. The agent does not receive `X-Ticket-Approval-Token`. A missing or wrong approval token is `401`. `TICKET_APPROVAL_TOKEN` is server configuration. This server does not invent one.
+
+Money fields are decimal strings. A body or query with an unknown field is `400 invalid_request`. The client does not send the price. The server stores the quote.
+
+| Method and path | Success | Result |
+| --- | --- | --- |
+| `GET /tickets/offers?city=New%20York` | 200 | `{ "offers": [ ... ] }` |
+| `GET /tickets/offers/:attractionId/slots?date=YYYY-MM-DD` | 200 | `{ "slots": [ ... ] }` |
+| `POST /tickets/quotes` | 201 | `{ "orderId", "quote" }` holds one seat for 120 seconds |
+| `POST /tickets/purchases` | 200 or 202 | `{ "order" }`. `issued` is 200. `payment_pending` and `ticket_pending` are 202 |
+| `GET /tickets/orders/:orderId` | 200 | `{ "order" }`. May finish a ticket that is already paid. Does not start a payment |
+| `POST /tickets/orders/:orderId/cancel` | 200 | `{ "order" }` for an unpaid hold |
+| `POST /tickets/approvals` | 200 | `{ "quoteId", "orderId", "expiresAt" }` |
+| `POST /tickets/mcp` | 200 | JSON-RPC. Tool errors set `isError` and repeat the error object in `structuredContent` and text |
+
+Ticket failures use `{ "error": { "code", "message" }, "orderId"? }`.
+
+| HTTP | `error.code` | When |
+| --- | --- | --- |
+| 400 | `invalid_request` | Unknown field, bad date, quantity other than 1, bad idempotency key |
+| 401 | `unauthorized` | Missing or wrong `X-Ticket-Approval-Token` |
+| 403 | `policy_denied` | Unverified offer, price above the per-ticket maximum, or trip ceiling |
+| 403 | `approval_required` | Purchase before the traveler confirms that quote |
+| 404 | `not_found` | Unknown attraction, quote, or order |
+| 409 | `not_available` | Date outside the window, or the slot is full |
+| 409 | `quote_expired` | The 120 second hold lapsed before purchase |
+| 409 | `price_changed` | Seller 402 price does not match the catalog. No new hold on quote. No signature after approval |
+| 409 | `idempotency_conflict` | Same key bound to a different quote |
+| 409 | `cannot_cancel` | Cancel of a pending, paid, issued, or already finished order |
+| 502 | `supplier_unavailable` | Seller sent no price |
+| 502 | `redeem_failed` | Payment failed and the ticket was not issued |
+
+The per-ticket maximum is 0.30 RLUSD and the trip ceiling is 0.50 RLUSD, unless `maxBooking` or `spendCeiling` is lower. The ceiling includes store reservations and spend. A paid ticket keeps the label `Demo ticket — not valid for admission`.
+
 ## Errors
 
 | HTTP | `error` | When |
