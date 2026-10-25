@@ -827,6 +827,35 @@ input { border: 0; outline: none; background: transparent; }
   50% { opacity: 0.45; }
 }
 
+.demo-tickets {
+  margin: 4px 0 32px;
+  padding-bottom: 28px;
+  border-bottom: 1px solid rgba(0, 0, 0, 0.08);
+}
+.demo-tickets h2 {
+  margin: 0 0 8px;
+  font-size: 28px;
+  letter-spacing: -0.03em;
+}
+.demo-note, .demo-meta, .demo-review p, .demo-status p { margin: 0 0 8px; color: var(--secondary); }
+.demo-grid, .demo-actions { display: flex; flex-wrap: wrap; gap: 12px; align-items: end; }
+.demo-grid { margin: 16px 0; }
+.demo-grid label { display: grid; gap: 6px; font-size: 13px; font-weight: 600; }
+.demo-grid select {
+  min-width: 180px;
+  height: 40px;
+  border-radius: 12px;
+  border: 1px solid rgba(0, 0, 0, 0.12);
+  background: #fff;
+  padding: 0 10px;
+}
+.demo-review, .demo-status {
+  margin-top: 16px;
+  padding: 16px;
+  border-radius: 16px;
+  background: var(--fill);
+}
+
 @media (prefers-reduced-motion: reduce) {
   .sheet, .rest, .rest-inner, .skeletons span, .place-skeletons span, .place-photo img { animation: none; transition: none; }
 }
