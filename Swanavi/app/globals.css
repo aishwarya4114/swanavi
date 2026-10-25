@@ -867,6 +867,38 @@ input { border: 0; outline: none; background: transparent; }
   background: var(--fill);
 }
 
+.shop-demo { display: grid; gap: 28px; }
+.shop-list { display: grid; grid-template-columns: repeat(auto-fill, minmax(210px, 1fr)); gap: 10px; margin-top: 10px; }
+.shop-card {
+  display: grid;
+  gap: 8px;
+  text-align: left;
+  padding: 14px;
+  border-radius: 14px;
+  border: 1px solid var(--line);
+  background: #fff;
+  cursor: pointer;
+}
+.shop-card[aria-pressed="true"] { border-color: var(--blue); box-shadow: 0 0 0 1px var(--blue); }
+.shop-name { font-weight: 600; }
+.shop-tags { display: flex; gap: 8px; font-size: 12px; color: var(--secondary); text-transform: capitalize; }
+.tag { padding: 1px 8px; border-radius: 999px; background: var(--fill); }
+.tag.warn { background: #fff1e6; color: #b25000; }
+.shop-items { display: grid; gap: 8px; margin-top: 16px; }
+.shop-item { display: flex; gap: 10px; align-items: flex-start; padding: 12px; border-radius: 12px; background: var(--fill); cursor: pointer; }
+.shop-item[data-on="true"] { box-shadow: 0 0 0 1px var(--blue); }
+.shop-desc { display: block; margin-top: 4px; font-size: 13px; color: var(--secondary); }
+.shop-steps { display: grid; grid-template-columns: repeat(auto-fit, minmax(240px, 1fr)); gap: 16px; }
+.shop-step { display: grid; gap: 10px; align-content: start; padding: 16px; border-radius: 16px; border: 1px solid var(--line); }
+.shop-max { display: grid; gap: 6px; font-size: 13px; font-weight: 600; }
+.shop-max input { height: 40px; border-radius: 12px; border: 1px solid rgba(0, 0, 0, 0.12); padding: 0 10px; }
+.shop-resource { margin: 8px 0 0; padding: 12px; border-radius: 12px; background: #fff; font-size: 12px; overflow-x: auto; }
+.shop-log ul { list-style: none; margin: 0; padding: 0; display: grid; gap: 6px; font-size: 13px; }
+.shop-log li { padding: 8px 12px; border-radius: 10px; background: var(--fill); }
+.shop-log li span { color: var(--tertiary); margin-right: 6px; }
+.shop-log li[data-tone="refused"] { background: #fff1f0; }
+.shop-log li[data-tone="pending"] { background: #fff8e6; }
+
 @media (prefers-reduced-motion: reduce) {
   .sheet, .rest, .rest-inner, .skeletons span, .place-skeletons span, .place-photo img { animation: none; transition: none; }
 }
