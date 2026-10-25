@@ -238,6 +238,52 @@ test('catalog SKU survives restart and a higher x402 price is refused without bu
   }
 });
 
+test('operation key reuses one escrow across restart and legacy calls stay separate', async () => {
+  const dir = mkdtempSync(join(tmpdir(), 'swanavi-op-'));
+  const storePath = join(dir, 'bookings.json');
+  const executor = fakeExecutor({ cap: '2' });
+  const first = createPayments({ mode: 'ap4m', executor, storePath, log: quiet, settleDelayMs: 1 });
+  let second;
+  try {
+    const id = await first.createEscrow('hotel', '0.40', 3600, null, 'ticket:ord_1');
+    assert.equal(await first.createEscrow('hotel', '0.40', 3600, null, 'ticket:ord_1'), id);
+    assert.equal((await first.getBudget()).reserved, '0.4');
+    const paid = await first.release(id);
+    assert.equal(paid.status, 'delivered');
+    const signatures = executor.state.calls.filter((call) => call.startsWith('redeem:')).length;
+    assert.equal(signatures, 1);
+    first.stop();
+    second = createPayments({ mode: 'ap4m', executor, storePath, log: quiet, settleDelayMs: 1 });
+    assert.equal(await second.createEscrow('hotel', '0.40', 3600, null, 'ticket:ord_1'), id);
+    assert.equal((await second.listEscrows()).length, 1);
+    assert.equal(executor.state.calls.filter((call) => call.startsWith('redeem:')).length, signatures);
+    await assert.rejects(
+      second.createEscrow('hotel', '0.41', 3600, null, 'ticket:ord_1'),
+      { code: 'idempotency_conflict' },
+    );
+    await assert.rejects(
+      second.createEscrow('cab', '0.40', 60, null, 'ticket:ord_1'),
+      { code: 'idempotency_conflict' },
+    );
+    const legacy = await second.createEscrow('cab', '0.10', 60);
+    assert.notEqual(legacy, id);
+    assert.equal((await second.listEscrows()).length, 2);
+    const mock = createPayments({ mode: 'mock', log: quiet });
+    const ticket = await mock.createEscrow('nyc-demo-art-gallery', '0.20', 60, 'ART-ADULT');
+    assert.equal((await mock.getStatus(ticket)).sku, 'ART-ADULT');
+    await assert.rejects(mock.createEscrow('nyc-demo-art-gallery', '0.21', 60, 'ART-ADULT'), { code: 'bad_request' });
+    const live = createPayments({ mode: 'ap4m', executor: fakeExecutor({ cap: '2' }), log: quiet });
+    await assert.rejects(live.createEscrow('nyc-demo-art-gallery', '0.20', 60, 'ART-ADULT'), { code: 'seller_unavailable' });
+    assert.equal((await live.getBudget()).reserved, '0');
+    mock.stop();
+    live.stop();
+  } finally {
+    first.stop();
+    second?.stop();
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
 test('catalog lost confirmation resumes the same SKU once and souvenir stays capped', async () => {
   const merchants = createMerchants({ x402BaseUrl: 'http://127.0.0.1' });
   const url = merchants.resourceFor('central-park-bikes', 'BIKE-2H');
@@ -1153,7 +1199,11 @@ test('tools.json names the agent calls and does not contain a token', () => {
   assert.deepEqual(tools.tools.map((tool) => tool.name), [
     'createEscrow', 'release', 'refund', 'getStatus', 'getBudget', 'closeTrip', 'fund',
     'listStores', 'searchStoreCatalog', 'getStoreQuote',
+    'listTicketOffers', 'getTicketSlots', 'quoteTicket', 'purchaseTicket', 'getTicketOrder', 'cancelTicketHold',
+    'prepareStorePurchase', 'purchaseStoreItem', 'getStorePurchase', 'cancelStorePurchase',
   ]);
+  assert.equal(tools.tools.some((tool) => tool.path === '/tickets/approvals'), false);
+  assert.equal(tools.tools.some((tool) => tool.path.endsWith('/approve')), false);
   for (const tool of tools.tools) {
     assert.equal(typeof tool.description, 'string');
     assert.equal(tool.inputSchema.type, 'object');

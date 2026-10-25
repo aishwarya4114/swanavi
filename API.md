@@ -393,6 +393,82 @@ In ap4m the freed amount is back inside the channel cap at once (`remaining` ris
 
 Reads the seller switch: `cancel` and `fail` call `refund`; `deliver` calls `release`, with the switch's `finalBill` when set. Same responses as those routes.
 
+## Demo tickets
+
+An escrow in `delivered` means the payment completed. It does not mean someone attended an attraction. Ticket orders use `quoted`, `payment_pending`, `ticket_pending`, `issued`, `cancelled`, `expired`, and `failed`.
+
+`POST /tickets/mcp` is a separate MCP target for the agent. It takes `X-Swanavi-Token`. The tool list is `list_ticket_offers`, `get_ticket_slots`, `quote_ticket`, `purchase_ticket`, `get_ticket_order`, and `cancel_ticket_hold`. Approval is not one of those tools.
+
+`POST /tickets/approvals` with `{ "quoteId" }` records the traveler's confirmation. Send `X-Swanavi-Token` and `X-Ticket-Approval-Token`. The agent does not receive `X-Ticket-Approval-Token`. A missing or wrong approval token is `401`. `TICKET_APPROVAL_TOKEN` is server configuration. This server does not invent one.
+
+Money fields are decimal strings. A body or query with an unknown field is `400 invalid_request`. The client does not send the price. The server stores the quote.
+
+| Method and path | Success | Result |
+| --- | --- | --- |
+| `GET /tickets/offers?city=New%20York` | 200 | `{ "offers": [ ... ] }` |
+| `GET /tickets/offers/:attractionId/slots?date=YYYY-MM-DD` | 200 | `{ "slots": [ ... ] }` |
+| `POST /tickets/quotes` | 201 | `{ "orderId", "quote" }` holds one seat for 120 seconds |
+| `POST /tickets/purchases` | 200 or 202 | `{ "order" }`. `issued` is 200. `payment_pending` and `ticket_pending` are 202 |
+| `GET /tickets/orders/:orderId` | 200 | `{ "order" }`. May finish a ticket that is already paid. Does not start a payment |
+| `POST /tickets/orders/:orderId/cancel` | 200 | `{ "order" }` for an unpaid hold |
+| `POST /tickets/approvals` | 200 | `{ "quoteId", "orderId", "expiresAt" }` |
+| `POST /tickets/mcp` | 200 | JSON-RPC. Tool errors set `isError` and repeat the error object in `structuredContent` and text |
+
+Ticket failures use `{ "error": { "code", "message" }, "orderId"? }`.
+
+| HTTP | `error.code` | When |
+| --- | --- | --- |
+| 400 | `invalid_request` | Unknown field, bad date, quantity other than 1, bad idempotency key |
+| 401 | `unauthorized` | Missing or wrong `X-Ticket-Approval-Token` |
+| 403 | `policy_denied` | Unverified offer, price above the per-ticket maximum, or trip ceiling |
+| 403 | `approval_required` | Purchase before the traveler confirms that quote |
+| 404 | `not_found` | Unknown attraction, quote, or order |
+| 409 | `not_available` | Date outside the window, or the slot is full |
+| 409 | `quote_expired` | The 120 second hold lapsed before purchase |
+| 409 | `price_changed` | Seller 402 price does not match the catalog. No new hold on quote. No signature after approval |
+| 409 | `idempotency_conflict` | Same key bound to a different quote |
+| 409 | `cannot_cancel` | Cancel of a pending, paid, issued, or already finished order |
+| 502 | `supplier_unavailable` | Seller sent no price |
+| 502 | `redeem_failed` | Payment failed and the ticket was not issued |
+
+The per-ticket maximum is 0.30 RLUSD and the trip ceiling is 0.50 RLUSD, unless `maxBooking` or `spendCeiling` is lower. The ceiling includes store reservations and spend. A paid ticket keeps the label `Demo ticket — not valid for admission`.
+
+## Demo shop purchases
+
+The nine shops are fictional. A paid purchase is a payment for a demo resource, not a real-world delivery. One purchase is one SKU, quantity 1. The flow is prepare, host approval, pay, status.
+
+`POST /stores/purchases/mcp` is a separate MCP target with `prepare_store_purchase`, `purchase_store_item`, `get_store_purchase` and `cancel_store_purchase`. It takes `X-Swanavi-Token`. The discovery target `POST /mcp` is unchanged.
+
+`POST /stores/purchases/:purchaseId/approve` is for the trusted host only. It needs `X-Swanavi-Token` and `X-Store-Approval-Token` (server `STORE_APPROVAL_TOKEN`). It is not an agent tool. Approval binds to the purchase ID, its immutable snapshot and its expiry.
+
+| Method and path | Success | Result |
+| --- | --- | --- |
+| `POST /stores/purchases` | 201 | `{ "purchase" }` from `{ storeId, sku, maximumAmount, idempotencyKey }`. Same key and arguments return the same purchase |
+| `POST /stores/purchases/:id/approve` | 200 | `{ "purchase" }` with status `approved` |
+| `POST /stores/purchases/:id/pay` | 200 or 202 | `{ "purchase" }`. `paid` is 200. `paying` is 202: poll status, do not pay again |
+| `GET /stores/purchases/:id` | 200 | `{ "purchase" }`. May confirm an already signed payment or pick up the receipt. Never signs |
+| `POST /stores/purchases/:id/cancel` | 200 | `{ "purchase" }` for an unpaid purchase |
+
+`purchase` fields: `purchaseId`, `storeId`, `sku`, `title`, `quantity` (1), `quotedAmount` (catalog price snapshot), `maximumAmount` (user bound), `currency`, `expiresAt` (120 seconds after preparation), `status` (`prepared`, `approved`, `paying`, `paid`, `cancelled`, `expired`, `failed`), `escrowId`, `chargedAmount` (may be below the quote if the seller asks less), `mode`, `demo` (always true), `live` (true only with confirmed chain evidence), `paidVia`, `txHash`, `explorerUrl`, `settlementStatus` (`not_started`, `pending`, `settled`), `receiptUrl`, `resource`, `error`. Mock purchases never carry a transaction hash, explorer link or receipt.
+
+Live preparation reads the seller's unpaid 402 and refuses a price that differs from the catalog. It signs nothing and reserves nothing. Pay creates the escrow with operation key `shop:<purchaseId>` and a 600 second deadline, then calls the existing release.
+
+Failures use `{ "error": { "code", "message" }, "purchase": {...} | null }`.
+
+| HTTP | `error.code` | When |
+| --- | --- | --- |
+| 400 | `invalid_request`, `unknown_store`, `unknown_sku` | Unknown field, bad amount or key, unknown store or SKU |
+| 401 | `unauthorized` | Missing or wrong service or approval token |
+| 403 | `unverified_store` | Shop is not on the verified demo list (the souvenir fixture) |
+| 403 | `price_above_maximum`, `amount_limit`, `spend_ceiling`, `over_budget`, `killed` | Price or limits |
+| 403 | `approval_required` | Pay before host approval |
+| 403 | `booking_facts_missing`, `policy_required` | `GUARDRAIL_MODE=required`: no trusted booking facts or policy exist yet, so it fails closed |
+| 404 | `not_found` | Unknown purchase |
+| 409 | `purchase_expired`, `invalid_state`, `idempotency_conflict`, `cannot_cancel`, `price_changed` | Expiry, state, key conflict, cancel after payment, seller price changed |
+| 502 | `seller_unavailable`, `challenge_mismatch`, `redeem_failed`, other payment codes | Seller or payment failure. The underlying payment code is kept |
+
+Without `GUARDRAIL_MODE=required` the server runs in compatibility mode and logs it: exact-purchase approval, verified shops, per-item maximum, spend ceiling and channel cap apply, but there is no confirmed trip policy.
+
 ## Errors
 
 | HTTP | `error` | When |

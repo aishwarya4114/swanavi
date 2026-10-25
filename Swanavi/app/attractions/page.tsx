@@ -6,6 +6,7 @@ import { useEffect, useMemo, useState, useSyncExternalStore } from "react";
 import { inclusiveDays } from "@/lib/civil";
 import { placeLine, placesErrorCopy, requestPlaces, type Attraction } from "@/lib/places";
 import { getTripRawServerSnapshot, parseStoredTrip, readTripRaw, subscribeTrip, writeStoredTrip } from "@/lib/trip";
+import DemoTickets from "./demo-tickets";
 import Mark from "../mark";
 
 function subscribeNothing() {
@@ -153,6 +154,8 @@ export default function AttractionsPage() {
             </button>
           </div>
         </header>
+
+        <DemoTickets />
 
         {status === "loading" ? (
           <div className="place-skeletons" aria-hidden="true">
