@@ -300,7 +300,7 @@ async function bookBikes() {
     const locked = await fetch('/escrows', {
       method: 'POST',
       headers: headers(token),
-      body: JSON.stringify({ sellerId: quote.sellerId, amount: quote.amount, deadlineSeconds: 600 }),
+      body: JSON.stringify({ sellerId: quote.sellerId, sku: quote.sku, amount: quote.amount, deadlineSeconds: 600 }),
     });
     const booking = await locked.json();
     if (!locked.ok) {

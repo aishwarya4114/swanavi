@@ -1,5 +1,5 @@
 /**
- * Four local sellers. outcome is a switch:
+ * Four legacy sellers and nine catalog stores. outcome is a switch:
  *   deliver — finish calls release
  *   cancel  — finish calls refund
  *   fail    — finish calls refund
@@ -11,6 +11,10 @@
  */
 
 import { PaymentError, formatRlusd, parseRlusd } from './payments.mjs';
+import { STORES } from './stores/catalog.mjs';
+import { STORE_RESOURCES, storeResource } from './stores/x402.mjs';
+
+export { STORE_RESOURCES };
 
 export const DEFAULTS = [
   { sellerId: 'hotel', name: 'The Plaza Hotel', price: '4', x402Port: 4311 },
@@ -41,6 +45,14 @@ export function createMerchants({ sellers = [], x402BaseUrl = null } = {}) {
     x402Port: entry.x402Port,
     resourceUrl: resourceUrlFor(x402BaseUrl, entry),
   }]));
+  for (const store of STORES) {
+    merchants.set(store.storeId, {
+      sellerId: store.storeId, name: store.name, price: store.offers[0].amount,
+      outcome: 'deliver', finalBill: null,
+      offers: STORE_RESOURCES.filter((entry) => entry.sellerId === store.storeId)
+        .map((entry) => ({ sku: entry.sku, price: entry.price, resourceUrl: resourceUrlFor(x402BaseUrl, entry) })),
+    });
+  }
   for (const saved of sellers) {
     const merchant = merchants.get(saved?.sellerId);
     if (!merchant || !OUTCOMES.has(saved.outcome)) continue;
@@ -88,7 +100,18 @@ export function createMerchants({ sellers = [], x402BaseUrl = null } = {}) {
     return list();
   }
 
-  return { list, get, setSwitch, exportState };
+  function resourceFor(sellerId, sku) {
+    if (STORES.some((store) => store.storeId === sellerId)) {
+      if (!x402BaseUrl) throw new PaymentError('seller_unavailable', 'Catalog payments require X402_SELLERS.');
+      let entry;
+      try { entry = storeResource(sellerId, sku); }
+      catch (error) { throw new PaymentError('bad_request', error.message); }
+      return resourceUrlFor(x402BaseUrl, entry);
+    }
+    return merchants.get(sellerId)?.resourceUrl ?? null;
+  }
+
+  return { list, get, setSwitch, exportState, resourceFor };
 }
 
 /**

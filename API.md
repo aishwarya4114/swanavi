@@ -91,7 +91,7 @@ Changed meaning in ap4m mode:
 
 **Error message change:** `overcharged` message now reads "Release was refused before any signature."
 
-**x402 (3.1, same version number; additive):** with `X402_SELLERS=http://127.0.0.1` the four sellers are real x402 merchants (`x402_sellers.mjs`, ports 4311–4314) and a live `release` buys over x402 instead of signing a voucher directly: it GETs the seller's `/resource`, reads the 402 price, **refuses a price above the lock before anything is signed** (`409 overcharged`, `reason: x402_price_exceeds_lock`, `finalBill` is the asked price), otherwise signs one cumulative voucher in answer to the 402; the seller submits `redeemVoucher` and pays the gas. A price under the lock pays the price and frees the difference. New booking fields: `paidVia` (`"x402"`, `"voucher"` or `null`) and `resource` (the JSON the seller delivered). New error `seller_unavailable` (502): the seller gave no 402; lock unchanged. Without `X402_SELLERS` nothing changes.
+**x402 (3.1, same version number; additive):** with `X402_SELLERS=http://127.0.0.1` the four sellers are real x402 merchants (`x402_sellers.mjs`, ports 4311–4314) and a live `release` buys over x402 instead of signing a voucher directly: it GETs the seller's `/resource`, reads the 402 price, **refuses a price above the lock before anything is signed** (`409 overcharged`, `reason: x402_price_exceeds_lock`, `finalBill` is the asked price), otherwise signs one cumulative voucher in answer to the 402; the seller submits `redeemVoucher` and pays the gas. A price under the lock pays the price and frees the difference. New booking fields: `paidVia` (`"x402"`, `"voucher"` or `null`) and `resource` (the JSON the seller delivered). New error `seller_unavailable` (502): the seller gave no 402; lock unchanged. Without `X402_SELLERS`, legacy sellers retain direct voucher payments; live catalog store bookings are refused. The nine catalog stores use ten additional SKU resources on ports 4321–4330.
 
 **Removed contradiction:** v2 said in one place that `release` ignores the seller switch and in another that it refuses cancelled sellers. The second is true, since v2's last change: `release` returns `409 seller_cancelled` or `seller_failed` and signs nothing.
 
@@ -130,7 +130,7 @@ Amounts are decimal strings with at most 18 places, such as `"0.01"`. The server
 | `cab` | Yellow Cab, Midtown to Brooklyn | `2` RLUSD |
 | `food` | Katz's Delicatessen | `2.5` RLUSD |
 
-Each seller has a switch: `deliver`, `cancel`, or `fail`. New sellers start on `deliver`. The quote is advice; the agent sends the amount it wants to lock (the live rehearsal uses `0.01`).
+Each seller has a switch: `deliver`, `cancel`, or `fail`. New sellers start on `deliver`. For legacy sellers the quote is advice; the agent sends the amount it wants to lock (the live rehearsal uses `0.01`). Catalog stores require the selected SKU and its exact quoted amount.
 
 ## States
 
@@ -265,7 +265,19 @@ Unchanged from v2.
 
 ### `POST /escrows`
 
-`createEscrow(sellerId, amount, deadlineSeconds)`. Locks when the amount fits.
+`createEscrow(sellerId, amount, deadlineSeconds, sku = null)`. Locks when the amount fits.
+
+For any of the nine catalog stores, `POST /escrows` must also include `sku` from
+the catalog quote. `amount` must equal that SKU's catalog amount; missing or
+unknown SKU and price mismatch return `400 bad_request`. The booking response
+and persisted state include `sku` (null for legacy sellers). In live mode,
+catalog bookings require `X402_SELLERS`; missing configuration returns
+`502 seller_unavailable` before reserving funds. Release routes to the SKU's
+fixed-price x402 resource on ports 4321–4330, including after a restart.
+The four legacy sellers retain their existing API and ports 4311–4314.
+`GET /merchants` now lists all thirteen sellers, with catalog `offers` containing
+`sku`, `price`, and `resourceUrl` (null when x402 is not configured).
+See [AWS_SETUP.md](AWS_SETUP.md) for the complete port table and purchase example.
 
 ```bash
 curl -s -H "X-Swanavi-Token: $SWANAVI_TOKEN" -X POST http://127.0.0.1:8787/escrows \
@@ -461,7 +473,7 @@ These are not HTTP routes. Do not point the Python agent or the UI at them. They
 - `scripts/live_channel_open_close.mjs` — opens and closes a channel (cap 2). Opens a channel: budgeted; do not run casually.
 - `scripts/live_over_cap.mjs` — the over-cap proof (simulate first, broadcast only if the simulation reverted). Result: README.md "Real vs simulated".
 - `scripts/live_trip.mjs` — pays 0.01 then 0.01 (cumulative 0.02) on a fixed channel, settles, and with `KEEP_OPEN=1` leaves it open.
-- `x402_sellers.mjs` — the four sellers as x402 merchants (needs a submitter key with gas, `MERCHANT_ID`, `MERCHANT_PAYOUT`).
+- `x402_sellers.mjs` — the four legacy sellers and ten catalog SKU resources as x402 merchants (needs a submitter key with gas, `MERCHANT_ID`, `MERCHANT_PAYOUT`).
 - `scripts/live_x402_test.mjs` — x402 rehearsal: reads every 402, buys hotel and cab at 0.01, is refused by an over-priced tour before signing, records and settles. Max 0.02 per run.
 - `scripts/close_channel.mjs` — settles and closes a channel, waits for `PayoutClosed`.
 - `scripts/live_merchant_channel.mjs` — opens a channel to the team's own merchant wallet, pays 0.01, prints the wallet balance before and after, leaves it open (`CONFIRM_OPEN=yes` required).

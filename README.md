@@ -36,8 +36,9 @@ its budget instead of paying twice or giving up.
   server. A bill under the lock pays the bill and frees the rest. At trip close the unused cap goes back to the funding
   vault on chain (`PayoutClosed`, with the returned amount). There is no per-claim refund function anywhere in the
   ledger; a paid voucher is final, which is why payment happens only on delivery.
-- **x402.** With `X402_SELLERS` set, the four demo sellers are real x402 merchants (`x402_sellers.mjs`, ports
-  4311–4314). `release` fetches the seller's resource, reads the 402 price, refuses a price above the lock before any
+- **x402.** With `X402_SELLERS` set, the four legacy sellers use ports 4311–4314 and the nine catalog stores
+  use ten SKU endpoints on ports 4321–4330 (`x402_sellers.mjs`). Catalog bookings require `sku` and its exact
+  quoted amount; they require x402 in live mode. `release` fetches the seller's resource, reads the 402 price, refuses a price above the lock before any
   signature, otherwise signs one voucher in answer to the 402; the seller submits the redemption and pays the gas.
 
 Files: `payments.mjs` (state machine, budget, repairs), `server.mjs` (HTTP), `merchants.mjs` (demo sellers),
@@ -107,7 +108,9 @@ Server variables: `SWANAVI_TOKEN` (required), `PAYMENTS_MODE` (`mock` default, `
 `AGENT_PRIVATE_KEY`, `AP4M_API_URL`, `AP4M_RPC_URL`, `TEAM_NAME`, `X402_SELLERS`, `REAL_SPEND_CEILING`,
 `MAX_BOOKING_RLUSD`, `PORT`, `HOST`. Seller variables: `MERCHANT_SUBMITTER_KEY`, `MERCHANT_ID`, `MERCHANT_PAYOUT`,
 `PRICE_<SELLER>` (default 0.01), `X402_SELLERS_HOST`, `STATE_DIRECTORY`, `ALLOW_NO_GAS`, `AP4M_API_URL`,
-`AP4M_RPC_URL`. Without `X402_SELLERS` the server signs vouchers directly instead of buying over x402.
+`AP4M_RPC_URL`. Without `X402_SELLERS` legacy sellers use direct vouchers; live catalog bookings are refused.
+The 0.05 ceiling above is for the legacy 0.01 rehearsal. Catalog prices start at 0.13;
+see `AWS_SETUP.md` for explicit catalog spending limits and a SKU-to-payment example.
 
 Operator scripts (`scripts/`, run from this folder): `merchant_status.mjs` and `chain_inspect.mjs` are read-only;
 `register_merchant.mjs` signs one message, no transaction; `live_*.mjs` and `close_channel.mjs` send transactions and
@@ -115,6 +118,9 @@ some open a channel (`live_channel_open_close.mjs`, `live_merchant_channel.mjs`)
 costs and what it refuses to do.
 
 ## Using the tools from an agent
+
+For AWS hosting, AgentCore Gateway registration, MCP smoke tests, and the x402
+request flow, see [the AWS sandbox handoff](AWS_SETUP.md).
 
 The agent calls the HTTP server; `tools.json` defines the tools in the agent's format: `createEscrow`, `release`,
 `refund`, `getStatus`, `getBudget`, `closeTrip`, `fund` (`fund` is mock only; live mode answers `409 live_mode`).

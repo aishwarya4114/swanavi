@@ -18,6 +18,7 @@
 import { randomUUID } from 'node:crypto';
 import { existsSync, mkdirSync, readFileSync, renameSync, writeFileSync } from 'node:fs';
 import { dirname } from 'node:path';
+import { STORES, getQuote } from './stores/catalog.mjs';
 
 export const BUDGET_RLUSD = '19';
 export const STATES = ['quoted', 'locked', 'paying', 'delivered', 'refunded', 'overcharged'];
@@ -192,6 +193,7 @@ export function createPayments({
     return {
       escrowId: escrow.escrowId,
       sellerId: escrow.sellerId,
+      sku: escrow.sku ?? null,
       amount: formatRlusd(escrow.amountWei),
       finalBill: escrow.finalBillWei === null ? null : formatRlusd(escrow.finalBillWei),
       status: escrow.status,
@@ -326,6 +328,7 @@ export function createPayments({
       bookings: [...escrows.values()].map((escrow) => ({
         escrowId: escrow.escrowId,
         sellerId: escrow.sellerId,
+        sku: escrow.sku ?? null,
         amount: formatRlusd(escrow.amountWei),
         finalBill: escrow.finalBillWei === null ? null : formatRlusd(escrow.finalBillWei),
         status: escrow.status,
@@ -372,6 +375,7 @@ export function createPayments({
       escrows.set(row.escrowId, {
         escrowId: row.escrowId,
         sellerId: row.sellerId,
+        sku: row.sku ?? null,
         amountWei: parseRlusd(row.amount),
         finalBillWei: row.finalBill == null ? null : parseRlusd(row.finalBill),
         status: row.status,
@@ -486,7 +490,7 @@ export function createPayments({
 
   // ---- the four functions ---------------------------------------------------------------
 
-  async function createEscrow(sellerId, amount, deadlineSeconds) {
+  async function createEscrow(sellerId, amount, deadlineSeconds, sku = null) {
     sweep();
     if (typeof sellerId !== 'string' || !/^[a-z][a-z0-9-]{0,31}$/.test(sellerId)) {
       throw new PaymentError('bad_request', 'sellerId must be a short lowercase id.');
@@ -496,6 +500,21 @@ export function createPayments({
     }
     if (killed) throw new PaymentError('killed', 'New locks are stopped.', { killed: true });
     const amountWei = parseRlusd(amount);
+    if (STORES.some((store) => store.storeId === sellerId)) {
+      let quote;
+      try { quote = getQuote(sellerId, sku); }
+      catch (error) { throw new PaymentError('bad_request', error.message); }
+      if (amountWei !== parseRlusd(quote.amount)) {
+        throw new PaymentError('bad_request', 'Catalog booking amount must match the SKU quote.');
+      }
+      // Resolve before reserving funds; catalog stores must never silently use
+      // the legacy direct-voucher path when their x402 mapping is unavailable.
+      if (live && !resourceOf(sellerId, sku)) {
+        throw new PaymentError('seller_unavailable', 'Catalog payments require an x402 resource.');
+      }
+    } else if (sku !== null) {
+      throw new PaymentError('bad_request', 'SKU is only supported for catalog stores.');
+    }
     const channel = await readChannel();
     if (live && (channel.status !== 'open' || trip.closed)) {
       throw new PaymentError('channel_closed', 'The trip channel is closed. No new lock is possible.', { channelId: trip.channelId });
@@ -504,6 +523,7 @@ export function createPayments({
     const escrow = {
       escrowId: `escrow_${randomUUID().replaceAll('-', '').slice(0, 16)}`,
       sellerId,
+      sku,
       amountWei,
       finalBillWei: null,
       status: 'quoted',
@@ -667,7 +687,7 @@ export function createPayments({
 
   /** release() on a 'paying' booking: confirmation only, never a signature. */
   async function confirmPaying(escrow) {
-    const resourceUrl = escrow.x402 ? resourceOf(escrow.sellerId) : null;
+    const resourceUrl = escrow.x402 ? resourceOf(escrow.sellerId, escrow.sku) : null;
     const channel = trip.channel ?? await readChannel(true);
     const outcome = await recoverPayment(escrow, escrow.cumulativeWei, resourceUrl, 'release called while paying');
     if (outcome.paid === false) {
@@ -693,7 +713,10 @@ export function createPayments({
     if (channel.status !== 'open' || trip.closed) {
       throw new PaymentError('channel_closed', 'The trip channel is closed. Nothing was signed.', { escrowId: escrow.escrowId, status: 'locked' });
     }
-    const resourceUrl = resourceOf(escrow.sellerId);
+    const resourceUrl = resourceOf(escrow.sellerId, escrow.sku);
+    if (!resourceUrl && STORES.some((store) => store.storeId === escrow.sellerId)) {
+      throw new PaymentError('seller_unavailable', 'Catalog payments require an x402 resource.');
+    }
     const cumulative = channel.redeemed + billWei;
     if (cumulative > channel.cap) {
       throw new PaymentError('over_cap', `Paying ${formatRlusd(billWei)} would put the channel at ${formatRlusd(cumulative)}, above its cap ${formatRlusd(channel.cap)}. Nothing was signed.`, {

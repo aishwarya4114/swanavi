@@ -6,7 +6,8 @@
 
 import { findStores, getQuote, publicStore, searchCatalog, STORES, storeById } from './catalog.mjs';
 
-const PROTOCOL = '2025-03-26';
+// Structured tool results were introduced in this protocol revision.
+const PROTOCOL = '2025-06-18';
 
 const DIRECTORY_TOOLS = [
   {
@@ -43,7 +44,7 @@ const DIRECTORY_TOOLS = [
   },
   {
     name: 'get_quote',
-    description: 'Lock a demo quote for a store SKU. No money moves. sellerId and amount can be passed to createEscrow.',
+    description: 'Read a demo quote for a store SKU. No money moves. Pass sellerId, sku and amount to createEscrow; release pays for this SKU over x402 when live.',
     inputSchema: {
       type: 'object',
       additionalProperties: false,
@@ -70,7 +71,7 @@ function storeTools(item) {
     },
     {
       name: 'get_quote',
-      description: `Quote one SKU at ${item.name}. No money moves. sellerId and amount can be passed to createEscrow. ${note}`,
+      description: `Quote one SKU at ${item.name}. No money moves. Pass sellerId, sku and amount to createEscrow. ${note}`,
       inputSchema: {
         type: 'object',
         additionalProperties: false,
@@ -131,20 +132,20 @@ export function handleStoreMcp(body, storeId = null) {
 
 function callDirectory(name, args) {
   if (name === 'list_stores') {
-    return findStores({
+    return { stores: findStores({
       city: args.city,
       category: args.category,
       near: args.near,
       radiusKm: args.radiusKm,
-    });
+    }) };
   }
-  if (name === 'search_catalog') return searchCatalog(args.storeId, { query: args.query });
+  if (name === 'search_catalog') return { items: searchCatalog(args.storeId, { query: args.query }) };
   if (name === 'get_quote') return getQuote(args.storeId, args.sku);
   throw new Error(`Unknown tool ${name}.`);
 }
 
 function callStore(storeId, name, args) {
-  if (name === 'search_catalog') return searchCatalog(storeId, { query: args.query });
+  if (name === 'search_catalog') return { items: searchCatalog(storeId, { query: args.query }) };
   if (name === 'get_quote') return getQuote(storeId, args.sku);
   if (name === 'store_info') return publicStore(storeById(storeId));
   throw new Error(`Unknown tool ${name}.`);

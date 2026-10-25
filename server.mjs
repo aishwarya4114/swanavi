@@ -46,9 +46,7 @@ export function createHandler({ payments, merchants, token }) {
   payments.setSellerStatus((sellerId) => {
     try { return merchants.get(sellerId).outcome; } catch { return null; }
   });
-  payments.setSellerResource((sellerId) => {
-    try { return merchants.get(sellerId).resourceUrl ?? null; } catch { return null; }
-  });
+  payments.setSellerResource((sellerId, sku) => merchants.resourceFor(sellerId, sku));
   payments.setStoreExtra(() => ({ sellers: merchants.exportState() }));
   payments.setOnEvent((event) => fanout(event));
 
@@ -206,7 +204,7 @@ async function route(method, parts, body, req, res, payments, merchants, clients
     return send(res, 200, { escrows: await payments.listEscrows() });
   }
   if (method === 'POST' && parts.length === 1 && parts[0] === 'escrows') {
-    const escrowId = await payments.createEscrow(body.sellerId, body.amount, body.deadlineSeconds);
+    const escrowId = await payments.createEscrow(body.sellerId, body.amount, body.deadlineSeconds, body.sku);
     return send(res, 201, await payments.getStatus(escrowId));
   }
   if (parts[0] === 'escrows' && parts.length === 2 && method === 'GET') {

@@ -4,7 +4,7 @@ import { request } from 'node:http';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { test } from 'node:test';
-import { createMerchants, finishEscrow } from '../merchants.mjs';
+import { createMerchants, finishEscrow, STORE_RESOURCES, resourceUrlFor } from '../merchants.mjs';
 import { API_VERSION, createPayments, formatRlusd, parseRlusd } from '../payments.mjs';
 import { startServer, warnIfOpen } from '../server.mjs';
 
@@ -167,6 +167,97 @@ function make(mode, options = {}) {
 const budgetFor = (mode) => (mode === 'mock'
   ? { total: '19', remaining: '18.6', reserved: '0.4', spent: '0' }
   : { total: '2', remaining: '1.6', reserved: '0.4', spent: '0' });
+
+test('every catalog SKU goes from MCP quote to its own x402 resource through HTTP', async () => {
+  const base = 'http://127.0.0.1';
+  const prices = Object.fromEntries(STORE_RESOURCES.map((entry) => [resourceUrlFor(base, entry), entry.price]));
+  const executor = fakeExecutor({ cap: '20', prices });
+  const payments = createPayments({ mode: 'ap4m', executor, maxBooking: '6', spendCeiling: '10', log: quiet });
+  const started = await startServer({ port: 0, payments, merchants: createMerchants({ x402BaseUrl: base }), token: TOKEN, log: quiet });
+  try {
+    for (const entry of STORE_RESOURCES) {
+      const found = await call(started.url, 'POST', '/mcp', {
+        jsonrpc: '2.0', id: 1, method: 'tools/call',
+        params: { name: 'get_quote', arguments: { storeId: entry.sellerId, sku: entry.sku } },
+      });
+      const quote = found.body.result.structuredContent;
+      const locked = await call(started.url, 'POST', '/escrows', {
+        sellerId: quote.sellerId, sku: quote.sku, amount: quote.amount, deadlineSeconds: 600,
+      });
+      assert.equal(locked.status, 201);
+      assert.equal(locked.body.sku, entry.sku);
+      const paid = await call(started.url, 'POST', `/escrows/${locked.body.escrowId}/release`, {});
+      assert.equal(paid.status, 200);
+      assert.equal(paid.body.paidVia, 'x402');
+      assert.equal(paid.body.finalBill, formatRlusd(parseRlusd(entry.price)));
+      assert.equal(paid.body.resource.sellerId, resourceUrlFor(base, entry));
+    }
+    assert.equal(executor.state.calls.filter((c) => c.startsWith('buy:')).length, 10);
+  } finally { started.server.close(); payments.stop(); }
+});
+
+test('catalog booking rejects missing/wrong SKU, price mismatch and unconfigured x402', async () => {
+  const { payments, executor } = make('ap4m');
+  const merchants = createMerchants({ x402BaseUrl: 'http://127.0.0.1' });
+  payments.setSellerResource(merchants.resourceFor);
+  for (const [sku, amount] of [[null, '0.15'], ['UNKNOWN', '0.15'], ['BIKE-4H', '0.15']]) {
+    await assert.rejects(payments.createEscrow('central-park-bikes', amount, 60, sku), { code: 'bad_request' });
+  }
+  payments.setSellerResource(createMerchants().resourceFor);
+  await assert.rejects(payments.createEscrow('central-park-bikes', '0.15', 60, 'BIKE-2H'), { code: 'seller_unavailable' });
+  assert.equal((await payments.getBudget()).reserved, '0');
+  assert.equal(executor.state.calls.some((c) => c.startsWith('buy:') || c.startsWith('redeem:')), false);
+  payments.stop();
+});
+
+test('catalog SKU survives restart and a higher x402 price is refused without buying', async () => {
+  const dir = mkdtempSync(join(tmpdir(), 'swanavi-catalog-'));
+  const storePath = join(dir, 'bookings.json');
+  const merchants = createMerchants({ x402BaseUrl: 'http://127.0.0.1' });
+  const url = merchants.resourceFor('central-park-bikes', 'BIKE-4H');
+  const executor = fakeExecutor({ prices: { [url]: '0.25' } });
+  const first = createPayments({ mode: 'ap4m', executor, storePath, log: quiet });
+  let second;
+  try {
+    first.setSellerResource(merchants.resourceFor);
+    const id = await first.createEscrow('central-park-bikes', '0.25', 600, 'BIKE-4H');
+    first.stop();
+    second = createPayments({ mode: 'ap4m', executor, storePath, log: quiet });
+    second.setSellerResource(merchants.resourceFor);
+    assert.equal((await second.getStatus(id)).sku, 'BIKE-4H');
+    const paid = await second.release(id);
+    assert.equal(paid.paidVia, 'x402');
+    assert.equal(paid.resource.sellerId, url);
+    const next = await second.createEscrow('central-park-bikes', '0.25', 600, 'BIKE-4H');
+    executor.state.prices[url] = parseRlusd('0.30');
+    await assert.rejects(second.release(next), { code: 'overcharged' });
+    assert.equal(executor.state.calls.filter((c) => c.startsWith('buy:')).length, 1);
+  } finally {
+    first.stop(); second?.stop();
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test('catalog lost confirmation resumes the same SKU once and souvenir stays capped', async () => {
+  const merchants = createMerchants({ x402BaseUrl: 'http://127.0.0.1' });
+  const url = merchants.resourceFor('central-park-bikes', 'BIKE-2H');
+  const { payments, executor } = make('ap4m', {
+    chain: { cap: '10', prices: { [url]: '0.15' }, loseOutcome: true },
+    maxBooking: '0.30', resumeWaitMs: 0,
+  });
+  payments.setSellerResource(merchants.resourceFor);
+  try {
+    const id = await payments.createEscrow('central-park-bikes', '0.15', 600, 'BIKE-2H');
+    const paid = await payments.release(id);
+    assert.equal(paid.status, 'delivered');
+    assert.equal(paid.sku, 'BIKE-2H');
+    assert.equal(paid.paidVia, 'x402');
+    assert.equal(executor.state.calls.filter((c) => c.startsWith('buy:')).length, 1);
+    assert.equal(executor.state.calls.filter((c) => c.startsWith('resume:')).length, 1);
+    await assert.rejects(payments.createEscrow('times-square-souvenir', '5', 60, 'SOUVENIR-GOLD'), { code: 'amount_limit' });
+    assert.equal(executor.state.redeemed, parseRlusd('0.15'));
+  } finally { payments.stop(); }
+});
 
 for (const mode of ['mock', 'ap4m']) {
   test(`normal pay (${mode})`, async () => {
@@ -787,7 +878,7 @@ test('payment files do not reference keys or the live agent', () => {
 test('x402 sellers and the x402 rehearsal script are built on the official helper and name no key file', () => {
   const sellers = readFileSync(new URL('../x402_sellers.mjs', import.meta.url), 'utf8');
   assert.match(sellers, /createX402Merchant\(/);
-  assert.match(sellers, /from '\.\/ap4m-x402\.mjs'/);
+  assert.match(sellers, /import\('\.\/ap4m-x402\.mjs'\)/);
   assert.match(sellers, /NonceManager/);
   for (const port of ['4311', '4312', '4313', '4314']) assert.match(readFileSync(new URL('../merchants.mjs', import.meta.url), 'utf8'), new RegExp(port));
   const rehearsal = readFileSync(new URL('../scripts/live_x402_test.mjs', import.meta.url), 'utf8');
@@ -826,7 +917,8 @@ test('http routes cover pay, cancel, deadline, overcharge, and over-budget', asy
     assert.equal(health.body.network, 'disabled');
 
     const shops = await call(started.url, 'GET', '/merchants');
-    assert.deepEqual(shops.body.merchants.map((merchant) => merchant.sellerId), ['hotel', 'tour', 'cab', 'food']);
+    assert.deepEqual(shops.body.merchants.slice(0, 4).map((merchant) => merchant.sellerId), ['hotel', 'tour', 'cab', 'food']);
+    assert.equal(shops.body.merchants.length, 13);
     assert.equal(shops.body.merchants[0].name, 'The Plaza Hotel');
     assert.equal(shops.body.merchants[0].price, '4');
     assert.equal(shops.body.merchants[3].sellerId, 'food');

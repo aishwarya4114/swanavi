@@ -13,6 +13,10 @@
         "additionalProperties": false,
         "required": ["sellerId", "amount", "deadlineSeconds"],
         "properties": {
+          "sku": {
+            "type": "string",
+            "description": "Required for catalog stores: pass the exact sku from getQuote, together with its sellerId and amount. Omit for hotel, tour, cab, food."
+          },
           "sellerId": {
             "type": "string",
             "description": "A payment seller (hotel, tour, cab, food) or a storeId returned by listStores.",
@@ -33,7 +37,7 @@
     },
     {
       "name": "release",
-      "description": "Pay a locked booking after delivery, for the full locked amount, or for finalBill when that bill is at or under the lock. Checks happen before anything is signed: seller outcome cancel is 409 seller_cancelled and fail is 409 seller_failed (lock unchanged; call refund); a finalBill above the lock is 409 overcharged (seller not paid, reservation returns to remaining). In ap4m mode with x402 sellers the server first reads the seller's HTTP 402 price: above the lock it is 409 overcharged with reason x402_price_exceeds_lock and nothing is signed; otherwise the agent signs ONE cumulative voucher in answer to the 402 and the seller submits it (response paidVia x402, resource = what the seller delivered). Without x402 sellers a passing release signs the cumulative voucher (channel redeemed so far plus this bill) and submits it itself; the response then has status delivered, txHash, explorerUrl, claimId, blockNumber, cumulativeAmount and live true, and receiptUrl fills in a few seconds later (poll getStatus). A bill under the lock frees the difference (counted in refundedTotal). If the voucher would exceed the channel cap the response is 409 over_cap and nothing is signed; if the transaction fails it is 502 redeem_failed and the lock is unchanged; if the trip channel is closed it is 409 channel_closed. Do not call release on a booking that is not locked. This call can take 10 to 20 seconds in ap4m mode.",
+      "description": "Pay a locked booking after delivery, for the full locked amount, or for finalBill when that bill is at or under the lock. Checks happen before anything is signed: seller outcome cancel is 409 seller_cancelled and fail is 409 seller_failed (lock unchanged; call refund); a finalBill above the lock is 409 overcharged (seller not paid, reservation returns to remaining). In ap4m mode with x402 sellers the server first reads the seller's HTTP 402 price: above the lock it is 409 overcharged with reason x402_price_exceeds_lock and nothing is signed; otherwise the agent signs ONE cumulative voucher in answer to the 402 and the seller submits it (response paidVia x402, resource = what the seller delivered). Catalog stores require x402 in live mode. For legacy sellers without x402, a passing release signs the cumulative voucher (channel redeemed so far plus this bill) and submits it itself; the response then has status delivered, txHash, explorerUrl, claimId, blockNumber, cumulativeAmount and live true, and receiptUrl fills in a few seconds later (poll getStatus). A bill under the lock frees the difference (counted in refundedTotal). If the voucher would exceed the channel cap the response is 409 over_cap and nothing is signed; if the transaction fails it is 502 redeem_failed and the lock is unchanged; if the trip channel is closed it is 409 channel_closed. Do not call release on a booking that is not locked. This call can take 10 to 20 seconds in ap4m mode.",
       "method": "POST",
       "path": "/escrows/{escrowId}/release",
       "inputSchema": {
@@ -164,7 +168,7 @@
     },
     {
       "name": "getStoreQuote",
-      "description": "Quote one SKU at a demo store. No money moves. The response amount and sellerId are what createEscrow locks. The Times Square souvenir quote is an unverified 5 RLUSD trap.",
+      "description": "Quote one SKU at a demo store. No money moves. Pass the response sellerId, sku and amount to createEscrow; catalog bookings require sku and the exact quote amount. The Times Square souvenir quote is an unverified 5 RLUSD trap.",
       "method": "POST",
       "path": "/stores/{storeId}/quote",
       "inputSchema": {

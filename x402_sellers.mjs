@@ -1,9 +1,10 @@
 /**
- * Our four sellers as real x402 merchants, one process, built on the official
+ * Four legacy sellers plus ten catalog SKUs as x402 merchants, one process, built on the official
  * createX402Merchant helper (ap4m-x402.mjs). Each seller is its own fixed-price merchant on
  * its own port (the helper requires the path to be exactly /resource):
  *
  *   hotel 4311   tour 4312   cab 4313   food 4314
+ *   Catalog SKU resources: stable ports 4321-4330 (stores/x402.mjs).
  *
  * An agent GETs /resource with X-AP4M-CHANNEL-ID and receives a 402 with the price; it answers
  * with a signed cumulative voucher; this process submits redeemVoucher from the submitter wallet
@@ -31,8 +32,7 @@ import { realpathSync } from 'node:fs';
 import { join } from 'node:path';
 import { pathToFileURL } from 'node:url';
 import { ethers } from 'ethers';
-import { createX402Merchant, loadX402Context } from './ap4m-x402.mjs';
-import { DEFAULTS, resourceUrlFor } from './merchants.mjs';
+import { DEFAULTS, STORE_RESOURCES, resourceUrlFor } from './merchants.mjs';
 
 export function sellerPrices(env = process.env) {
   const prices = {};
@@ -48,6 +48,7 @@ export function sellerContent(entry) {
   return {
     sellerId: entry.sellerId,
     name: entry.name,
+    ...(entry.sku ? { sku: entry.sku, title: entry.title, amount: entry.price, currency: 'RLUSD' } : {}),
     confirmation: `Booking confirmed by ${entry.name}. Paid over x402 on an AP4M channel; see the VoucherRedeemed event in PAYMENT-RESPONSE.`,
   };
 }
@@ -56,6 +57,7 @@ export async function startSellers({
   env = process.env,
   log = console,
 } = {}) {
+  const { createX402Merchant, loadX402Context } = await import('./ap4m-x402.mjs');
   const key = env.MERCHANT_SUBMITTER_KEY;
   const merchantId = (env.MERCHANT_ID || '').toLowerCase();
   const payout = env.MERCHANT_PAYOUT || '';
@@ -68,7 +70,7 @@ export async function startSellers({
   const context = await loadX402Context(apiUrl);
   const config = await (await fetch(`${apiUrl}/public/config`)).json();
   const provider = new ethers.JsonRpcProvider(env.AP4M_RPC_URL || config.network.rpcUrl, Number(config.network.chainId || 1449000), { staticNetwork: true });
-  // One nonce manager shared by the four sellers so two redemptions in a row never collide.
+  // One nonce manager shared by all sellers so redemptions never collide.
   const submitter = new ethers.NonceManager(new ethers.Wallet(key, provider));
   const submitterAddress = await submitter.getAddress();
   const gas = await provider.getBalance(submitterAddress);
@@ -76,28 +78,10 @@ export async function startSellers({
   if (gas === 0n && env.ALLOW_NO_GAS !== '1') throw new Error(`Submitter ${submitterAddress} has no XRP. Fund it from the faucet first (ALLOW_NO_GAS=1 to serve 402s only).`);
   log.log(`merchant ${merchantId} payout ${payout}`);
 
-  const prices = sellerPrices(env);
-  const sellers = [];
-  for (const entry of DEFAULTS) {
-    const resourceUrl = resourceUrlFor(`http://${host}`, entry);
-    const merchant = createX402Merchant({
-      context,
-      provider,
-      submitter,
-      stateDirectory: join(stateRoot, entry.sellerId),
-      resourceUrl,
-      merchantParticipantId: merchantId,
-      payout,
-      amount: prices[entry.sellerId].toString(),
-      content: sellerContent(entry),
-    });
-    await new Promise((resolve, reject) => {
-      merchant.server.once('error', reject);
-      merchant.server.listen(entry.x402Port, host, resolve);
-    });
-    log.log(`${entry.sellerId.padEnd(5)} ${entry.name.padEnd(32)} ${ethers.formatUnits(prices[entry.sellerId], 18).padStart(6)} RLUSD  ${resourceUrl}`);
-    sellers.push({ ...entry, resourceUrl, merchant, price: prices[entry.sellerId] });
-  }
+  const sellers = await startResourceSellers({
+    createX402Merchant, context, provider, submitter, merchantId, payout,
+    host, stateRoot, env, log,
+  });
   return {
     sellers,
     submitter: submitterAddress,
@@ -105,6 +89,43 @@ export async function startSellers({
       await Promise.all(sellers.map((s) => s.merchant.close()));
     },
   };
+}
+
+// Separate resource serving from wallet/network bootstrap so the exact helper
+// configuration and routing can be tested without signing or accessing a chain.
+export async function startResourceSellers({
+  createX402Merchant, context, provider, submitter, merchantId, payout,
+  host, stateRoot, env = process.env, log = console,
+}) {
+  const prices = sellerPrices(env);
+  const sellers = [];
+  try {
+    for (const entry of [...DEFAULTS, ...STORE_RESOURCES]) {
+      const price = entry.sku ? ethers.parseUnits(entry.price, 18) : prices[entry.sellerId];
+      const resourceUrl = resourceUrlFor(`http://${host}`, entry);
+      const merchant = createX402Merchant({
+        context,
+        provider,
+        submitter,
+        stateDirectory: join(stateRoot, entry.stateId ?? entry.sellerId),
+        resourceUrl,
+        merchantParticipantId: merchantId,
+        payout,
+        amount: price.toString(),
+        content: sellerContent(entry),
+      });
+      sellers.push({ ...entry, resourceUrl, merchant, price });
+      await new Promise((resolve, reject) => {
+        merchant.server.once('error', reject);
+        merchant.server.listen(entry.x402Port, host, resolve);
+      });
+      log.log(`${entry.sellerId} ${entry.sku ?? ''} ${ethers.formatUnits(price, 18)} RLUSD  ${resourceUrl}`);
+    }
+    return sellers;
+  } catch (error) {
+    await Promise.allSettled(sellers.map((s) => s.merchant.close()));
+    throw error;
+  }
 }
 
 function runningAsCli() {
