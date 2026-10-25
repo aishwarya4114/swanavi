@@ -19,6 +19,8 @@ export const PER_TICKET_MAX = '0.30';
 export const TRIP_CEILING = '0.50';
 export const POLICY_VERSION = 1;
 export const QUOTE_TTL_MS = 120_000;
+export const ESCROW_DEADLINE_SECONDS = 7 * 24 * 60 * 60;
+export const DEMO_LABEL = 'Demo ticket — not valid for admission';
 const HOLDING = new Set(['payment_pending', 'ticket_pending', 'issued']);
 
 function wei(value) {
@@ -41,6 +43,7 @@ export function createTicketService({
   mode = 'mock',
   channelId = null,
   readSellerPrice = null,
+  fault = null,
 } = {}) {
   if (mode !== 'mock' && mode !== 'ap4m') {
     throw new TicketError('invalid_request', 'mode must be mock or ap4m.');
@@ -90,6 +93,13 @@ export function createTicketService({
 
   function persist() {
     if (statePath) writeState(statePath, state);
+  }
+
+  function crash(point) {
+    if (fault !== point) return;
+    const error = new Error(`injected crash at ${point}`);
+    error.code = 'injected_crash';
+    throw error;
   }
 
   function stamp(order) {
@@ -248,12 +258,281 @@ export function createTicketService({
     });
   }
 
+  function orderByQuote(quoteId) {
+    return Object.values(state.orders).find((order) => order.quoteId === quoteId) ?? null;
+  }
+
+  function paymentView(status) {
+    const live = status.live === true;
+    return {
+      mode: status.mode,
+      live,
+      paidVia: live ? (status.paidVia ?? null) : null,
+      txHash: live ? (status.txHash ?? null) : null,
+      explorerUrl: live ? (status.explorerUrl ?? null) : null,
+      receiptUrl: live ? (status.receiptUrl ?? null) : null,
+    };
+  }
+
+  function notePayment(order, status) {
+    order.payment = paymentView(status);
+    order.paymentStatus = 'confirmed';
+    order.status = 'ticket_pending';
+    order.error = null;
+    stamp(order);
+    persist();
+  }
+
+  function fail(order, code, message) {
+    order.status = 'failed';
+    order.paymentStatus = 'unpaid';
+    order.error = { code, message };
+    stamp(order);
+    persist();
+  }
+
+  function issue(order) {
+    if (order.ticket) {
+      order.status = 'issued';
+      order.paymentStatus = 'confirmed';
+      order.error = null;
+      stamp(order);
+      persist();
+      return;
+    }
+    order.status = 'ticket_pending';
+    order.paymentStatus = 'confirmed';
+    persist();
+    crash('before_ticket');
+    const issuedAt = new Date(now()).toISOString();
+    order.ticket = {
+      ticketId: opaque('tkt'),
+      label: DEMO_LABEL,
+      attractionId: order.quote.attractionId,
+      sku: order.quote.sku,
+      slotId: order.quote.slotId,
+      quantity: 1,
+      confirmationCode: `DEMO-${randomBytes(4).toString('hex').toUpperCase()}`,
+      issuedAt,
+    };
+    order.status = 'issued';
+    order.error = null;
+    stamp(order);
+    persist();
+  }
+
+  async function releaseUnpaidLock(order) {
+    if (!order.escrowId) return;
+    const status = await payments.getStatus(order.escrowId);
+    if (status.status === 'locked' || status.status === 'quoted') await payments.refund(order.escrowId);
+  }
+
+  async function onPaymentFailure(order, error) {
+    if (error?.code === 'injected_crash') throw error;
+    const code = error?.code;
+    if (code === 'redeem_unconfirmed' || code === 'chain_unavailable') {
+      order.paymentStatus = 'pending';
+      order.error = { code, message: String(error.message).slice(0, 300) };
+      stamp(order);
+      persist();
+      return;
+    }
+    if (code === 'overcharged') {
+      fail(order, 'price_changed', 'The seller price changed. Request a new quote.');
+      throw new TicketError('price_changed', order.error.message, { orderId: order.orderId });
+    }
+    await releaseUnpaidLock(order);
+    const mapped = code === 'redeem_failed' ? 'redeem_failed' : 'supplier_unavailable';
+    fail(order, mapped, String(error.message).slice(0, 300));
+    throw new TicketError(mapped, order.error.message, { orderId: order.orderId });
+  }
+
+  async function assertSellerPrice(order) {
+    if (!readSellerPrice) return;
+    let asked;
+    try {
+      asked = await readSellerPrice(order.quote.sellerId, order.quote.sku);
+    } catch {
+      throw new TicketError('supplier_unavailable', 'The seller did not return a price.', { orderId: order.orderId });
+    }
+    if (wei(asked) !== wei(order.quote.amount)) {
+      throw new TicketError('price_changed', 'The seller price does not match the approved quote.', { orderId: order.orderId });
+    }
+  }
+
+  async function settle(order) {
+    if (order.status === 'ticket_pending') {
+      issue(order);
+      return;
+    }
+    if (order.status !== 'payment_pending' || !order.escrowId) return;
+    const current = await payments.getStatus(order.escrowId);
+    if (current.status === 'delivered') {
+      notePayment(order, current);
+      issue(order);
+      return;
+    }
+    if (current.status === 'paying') return;
+    if (current.status === 'overcharged') {
+      fail(order, 'price_changed', 'The seller price changed. Request a new quote.');
+    }
+  }
+
+  async function pay(order) {
+    if (!order.escrowId) {
+      const escrowId = await payments.createEscrow(
+        order.quote.sellerId,
+        order.quote.amount,
+        ESCROW_DEADLINE_SECONDS,
+        order.quote.sku,
+        `ticket:${order.orderId}`,
+      );
+      crash('after_escrow_created');
+      order.escrowId = escrowId;
+      stamp(order);
+      persist();
+      crash('after_escrow');
+    }
+    const current = await payments.getStatus(order.escrowId);
+    if (current.status === 'delivered') {
+      crash('after_confirmation');
+      notePayment(order, current);
+      issue(order);
+      return;
+    }
+    if (current.status === 'paying') {
+      try {
+        const paid = await payments.release(order.escrowId);
+        crash('after_confirmation');
+        notePayment(order, paid);
+        issue(order);
+      } catch (error) {
+        await onPaymentFailure(order, error);
+      }
+      return;
+    }
+    if (current.status === 'overcharged') {
+      fail(order, 'price_changed', 'The seller price changed. Request a new quote.');
+      throw new TicketError('price_changed', order.error.message, { orderId: order.orderId });
+    }
+    if (current.status !== 'locked') {
+      await onPaymentFailure(order, { code: 'seller_unavailable', message: 'The payment did not stay reserved.' });
+      return;
+    }
+    try {
+      const paid = await payments.release(order.escrowId);
+      crash('after_confirmation');
+      notePayment(order, paid);
+      issue(order);
+    } catch (error) {
+      await onPaymentFailure(order, error);
+    }
+  }
+
+  function remembered(order, key, bound) {
+    if (!bound) {
+      state.idempotency[key] = { quoteId: order.quoteId, orderId: order.orderId };
+      persist();
+    }
+  }
+
+  async function resume(order) {
+    if (order.status === 'expired') {
+      throw new TicketError('quote_expired', 'The quote expired.', { orderId: order.orderId });
+    }
+    if (order.status === 'cancelled') {
+      throw new TicketError('invalid_request', 'That hold is cancelled.', { orderId: order.orderId });
+    }
+    if (order.status === 'failed') {
+      throw new TicketError(order.error.code, order.error.message, { orderId: order.orderId });
+    }
+    if (order.status === 'issued') return { order: view(order) };
+    if (order.status === 'ticket_pending') {
+      issue(order);
+      return { order: view(order) };
+    }
+    await pay(order);
+    return { order: view(order) };
+  }
+
   function getOrder(input) {
-    return exclusive(() => {
+    return exclusive(async () => {
       rejectUnknown(input, ['orderId']);
       const order = mustGet(input.orderId);
       if (expireOrders()) persist();
+      await settle(order);
       return { order: view(order) };
+    });
+  }
+
+  function approve(input) {
+    return exclusive(() => {
+      rejectUnknown(input, ['quoteId']);
+      if (typeof input.quoteId !== 'string' || input.quoteId.length === 0) {
+        throw new TicketError('invalid_request', 'quoteId is required.');
+      }
+      const order = orderByQuote(input.quoteId);
+      if (!order) throw new TicketError('not_found', 'Unknown quote.');
+      if (expireOrders()) persist();
+      if (order.status !== 'quoted') {
+        throw new TicketError(order.status === 'expired' ? 'quote_expired' : 'invalid_request', 'That quote can no longer be confirmed.', { orderId: order.orderId });
+      }
+      state.approvals[order.quoteId] = {
+        quoteId: order.quoteId,
+        orderId: order.orderId,
+        policyVersion: POLICY_VERSION,
+        expiresAt: order.quote.expiresAt,
+        snapshot: { ...order.quote },
+      };
+      persist();
+      return { quoteId: order.quoteId, orderId: order.orderId, expiresAt: order.quote.expiresAt };
+    });
+  }
+
+  function purchase(input) {
+    return exclusive(async () => {
+      rejectUnknown(input, ['quoteId', 'idempotencyKey']);
+      const key = input.idempotencyKey;
+      if (typeof key !== 'string' || key.length < 1 || key.length > 128) {
+        throw new TicketError('invalid_request', 'idempotencyKey must be 1 to 128 characters.');
+      }
+      if (typeof input.quoteId !== 'string' || input.quoteId.length === 0) {
+        throw new TicketError('invalid_request', 'quoteId is required.');
+      }
+      if (expireOrders()) persist();
+      const bound = state.idempotency[key];
+      if (bound && bound.quoteId !== input.quoteId) {
+        throw new TicketError('idempotency_conflict', 'idempotencyKey is already bound to another quote.');
+      }
+      const order = bound ? state.orders[bound.orderId] : orderByQuote(input.quoteId);
+      if (!order || order.quoteId !== input.quoteId) throw new TicketError('not_found', 'Unknown quote.');
+      if (order.status !== 'quoted') {
+        if (order.status === 'payment_pending' || order.status === 'ticket_pending' || order.status === 'issued' || order.status === 'failed') {
+          remembered(order, key, bound);
+        }
+        return resume(order);
+      }
+      const approval = state.approvals[order.quoteId];
+      if (!approval || approval.policyVersion !== POLICY_VERSION || approval.snapshot.amount !== order.quote.amount || approval.snapshot.slotId !== order.quote.slotId) {
+        throw new TicketError('approval_required', 'The traveler has not confirmed this quote.', { orderId: order.orderId });
+      }
+      await policyRoom(wei(order.quote.amount));
+      await assertSellerPrice(order);
+      state.idempotency[key] = { quoteId: order.quoteId, orderId: order.orderId };
+      order.status = 'payment_pending';
+      order.paymentStatus = 'pending';
+      order.error = null;
+      stamp(order);
+      persist();
+      crash('after_intent');
+      return resume(order);
+    });
+  }
+
+  function reconcile() {
+    return exclusive(async () => {
+      if (expireOrders()) persist();
+      for (const order of Object.values(state.orders)) await settle(order);
     });
   }
 
@@ -284,8 +563,11 @@ export function createTicketService({
     listOffers,
     getSlots,
     quote,
+    approve,
+    purchase,
     getOrder,
     cancel,
     sweep,
+    reconcile,
   };
 }

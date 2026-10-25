@@ -10,6 +10,7 @@ const STATUS = {
   idempotency_conflict: 409,
   cannot_cancel: 409,
   supplier_unavailable: 502,
+  redeem_failed: 502,
 };
 
 export class TicketError extends Error {
