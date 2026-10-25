@@ -3,6 +3,7 @@ eswanth-avida-e714010/
 *-state*/
 agent-state/
 merchant-state/
+tickets-state/
 bookings.json*
 .env
 .env.*
