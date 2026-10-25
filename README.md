@@ -6,9 +6,6 @@ anything for a cancelled booking, refuses a bill above the quote before any sign
 are enforced in code and, for the channel cap, by the ledger contract itself. It runs the same API in a mock mode
 (no network, no keys) and in a live mode (real RLUSD vouchers on testnet).
 
-This is one of two payment rails in the team repo. `docs/SPEC.md` there describes a Python, XRPL-native design;
-this folder is a second, independent rail (Node.js, AP4M payment channels) that exposes the same tool names.
-
 ## Real vs simulated
 
 | | Status | Evidence |
@@ -117,7 +114,7 @@ Operator scripts (`scripts/`, run from this folder): `merchant_status.mjs` and `
 some open a channel (`live_channel_open_close.mjs`, `live_merchant_channel.mjs`). Each file's header says what it
 costs and what it refuses to do.
 
-## Integration
+## Using the tools from an agent
 
 The agent calls the HTTP server; `tools.json` defines the tools in the agent's format: `createEscrow`, `release`,
 `refund`, `getStatus`, `getBudget`, `closeTrip`, `fund` (`fund` is mock only; live mode answers `409 live_mode`).
@@ -129,9 +126,6 @@ Routes (all need header `X-Swanavi-Token`): `POST /escrows`, `GET /escrows`, `GE
 (dashboard). Every field, state and error code is in [`API.md`](API.md). The UI's budget meter is `GET /budget`
 (`total`, `remaining`, `reserved`, `spent`, `refundedTotal`, plus `trip` and `fund` read from chain in live mode);
 each delivered booking has `txHash`, `explorerUrl` and, once settled, `receiptUrl`.
-
-The team repo's `docs/SPEC.md` describes a different, Python, XRPL-native payment design. This folder does not
-implement that spec; it is a second rail with the same tool names so the agent can use either.
 
 ## Safety design
 
