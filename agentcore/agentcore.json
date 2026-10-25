@@ -1,0 +1,19 @@
+{
+  "name": "swanavi",
+  "version": 2,
+  "managedBy": "CDK",
+  "runtimes": [
+    {
+      "name": "agent",
+      "build": "CodeZip",
+      "modelProvider": "Bedrock",
+      "entrypoint": "main.py",
+      "codeLocation": "app/agent",
+      "runtimeVersion": "PYTHON_3_14",
+      "protocol": "HTTP",
+      "envVars": [
+        {"name": "SWANAVI_MODEL_DELEGATION", "value": "on"}
+      ]
+    }
+  ]
+}
